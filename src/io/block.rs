@@ -30,17 +30,14 @@ impl Block {
     }
 }
 
-#[allow(dead_code)]
 pub fn blocks_needed(n: u64) -> u64 {
     n.div_ceil(2880)
 }
 
-#[allow(dead_code)]
 pub fn padded_size(n: u64) -> u64 {
     blocks_needed(n) * 2880
 }
 
-#[allow(dead_code)]
 pub fn padding_bytes(n: u64) -> u64 {
     padded_size(n) - n
 }
@@ -100,5 +97,20 @@ mod tests {
             result,
             Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof
         ));
+    }
+
+    #[test]
+    fn alignment() {
+        assert_eq!(blocks_needed(0), 0);
+        assert_eq!(blocks_needed(1), 1);
+        assert_eq!(blocks_needed(2880), 1);
+        assert_eq!(blocks_needed(2881), 2);
+
+        assert_eq!(padded_size(400), 2880);
+        assert_eq!(padded_size(2880), 2880);
+        assert_eq!(padded_size(2881), 5760);
+
+        assert_eq!(padding_bytes(400), 2480);
+        assert_eq!(padding_bytes(2880), 0);
     }
 }
