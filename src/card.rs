@@ -320,6 +320,20 @@ mod tests {
     }
 
     #[test]
+    fn test_unrecognized_keyword_no_value_indicator() {
+        let header = "FOOBAR  unrecognized keyword without value indicator";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let result = Card::try_from(card);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unrecognized keyword")
+        );
+    }
+
+    #[test]
     fn test_logical_true() {
         let header = "SIMPLE  =                    T / FITS STANDARD";
         let card = RawCard::try_from(&right_pad(header)).unwrap();
@@ -545,7 +559,16 @@ mod tests {
     }
 
     #[test]
-    fn test_undefind_with_comment() {
+    fn test_string_unclosed() {
+        let header = "UNCLOSED= 'where was I going            / unclosed string";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let result = Card::try_from(card);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unclosed string"));
+    }
+
+    #[test]
+    fn test_undefined_with_comment() {
         let header = "UNDEF   =                      / blank value field with comment";
         let card = RawCard::try_from(&right_pad(header)).unwrap();
         let card = Card::try_from(card).unwrap();
@@ -560,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn test_undefind_without_comment() {
+    fn test_undefined_without_comment() {
         let header = "UNDEF2  =";
         let card = RawCard::try_from(&right_pad(header)).unwrap();
         let card = Card::try_from(card).unwrap();
@@ -617,6 +640,15 @@ mod tests {
                 comment: Some("complex float with exponents".to_string())
             }
         );
+    }
+
+    #[test]
+    fn test_complex_float_unclosed() {
+        let header = "CMPXE   = (1.23E2, -4.56E-1   / complex float unclosed";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let result = Card::try_from(card);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unclosed complex"));
     }
 
     #[test]
