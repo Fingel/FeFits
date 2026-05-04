@@ -20,6 +20,13 @@ impl RawCard {
         // SAFETY: constructor validates all bytes are printable ASCII (0x20–0x7E)
         unsafe { std::str::from_utf8_unchecked(&self.0[10..80]) }
     }
+
+    /// 4.4.2.4 Keywords without a value indicator (COMMENT, HISTORY, CONTINUE, blank keyword)
+    /// Bytes 9 through 80
+    pub fn after_keyword(&self) -> &str {
+        // SAFETY: constructor validates all bytes are printable ASCII (0x20–0x7E)
+        unsafe { std::str::from_utf8_unchecked(&self.0[8..]) }
+    }
 }
 
 impl TryFrom<&[u8; 80]> for RawCard {
@@ -63,7 +70,7 @@ pub enum Card {
     Comment(String), // bytes 9–80, no value indicator
     History(String), // bytes 9–80, no value indicator
     Continue {
-        value: String,
+        value: CardValue,
         comment: Option<String>,
     },
     Hierarch {
@@ -81,16 +88,19 @@ impl TryFrom<RawCard> for Card {
         validate_keyword(raw.keyword())?;
         match raw.keyword() {
             "" => {
-                if raw.value_comment().trim().is_empty() {
+                if raw.after_keyword().trim().is_empty() {
                     Ok(Card::Blank)
                 } else {
-                    Ok(Card::Comment(parse_comment_string(raw.value_comment())))
+                    Ok(Card::Comment(parse_comment_string(raw.after_keyword())))
                 }
             }
             "END" => Ok(Card::End),
-            "COMMENT" => Ok(Card::Comment(parse_comment_string(raw.value_comment()))),
-            "HISTORY" => Ok(Card::History(parse_comment_string(raw.value_comment()))),
-            "CONTINUE" => todo!(),
+            "COMMENT" => Ok(Card::Comment(parse_comment_string(raw.after_keyword()))),
+            "HISTORY" => Ok(Card::History(parse_comment_string(raw.after_keyword()))),
+            "CONTINUE" => {
+                let (value, comment) = parse_continue(raw.after_keyword())?;
+                Ok(Card::Continue { value, comment })
+            }
             "XTENSION" => todo!(),
             "HIERARCH" => todo!(),
             _ => {
@@ -149,6 +159,13 @@ fn parse_value(input: &str) -> Result<(CardValue, Option<String>), Error> {
         _ => parse_number(value_str)?,
     };
 
+    Ok((value, comment))
+}
+
+// 4.2.1.2: byte 9 is a required space, bytes 10–80 are a string value field
+fn parse_continue(input: &str) -> Result<(CardValue, Option<String>), Error> {
+    let (rest, value) = parse_string(input)?;
+    let comment = extract_comment(rest);
     Ok((value, comment))
 }
 
@@ -590,7 +607,7 @@ mod tests {
 
     #[test]
     fn test_comment() {
-        let header = "COMMENT   Observation taken during director's discretionary time";
+        let header = "COMMENT Observation taken during director's discretionary time";
         let card = RawCard::try_from(&right_pad(header)).unwrap();
         let card = Card::try_from(card).unwrap();
         assert_eq!(
@@ -601,7 +618,8 @@ mod tests {
 
     #[test]
     fn test_history() {
-        let header = "HISTORY   Reduced with banzai";
+        // Bytes 9–80 are the commentary; the two spaces after "HISTORY " are part of the text.
+        let header = "HISTORY Reduced with banzai";
         let card = RawCard::try_from(&right_pad(header)).unwrap();
         let card = Card::try_from(card).unwrap();
         assert_eq!(card, Card::History("Reduced with banzai".to_string()));
@@ -617,7 +635,7 @@ mod tests {
 
     #[test]
     fn test_blank_with_content() {
-        let header = "          blank keyword";
+        let header = "        blank keyword";
         let card = RawCard::try_from(&right_pad(header)).unwrap();
         let card = Card::try_from(card).unwrap();
         assert_eq!(card, Card::Comment("blank keyword".to_string()));
@@ -629,5 +647,33 @@ mod tests {
         let card = RawCard::try_from(&right_pad(header)).unwrap();
         let card = Card::try_from(card).unwrap();
         assert_eq!(card, Card::End)
+    }
+
+    #[test]
+    fn test_continue_no_comment() {
+        let header = "CONTINUE ' over multiple keyword cards.'";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Continue {
+                value: CardValue::String(" over multiple keyword cards.".to_string()),
+                comment: None
+            }
+        );
+    }
+
+    #[test]
+    fn test_continue_with_comment() {
+        let header = "CONTINUE 'final segment' / continuation comment";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Continue {
+                value: CardValue::String("final segment".to_string()),
+                comment: Some("continuation comment".to_string())
+            }
+        );
     }
 }
