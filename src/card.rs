@@ -542,4 +542,92 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn test_complex_integer() {
+        let header = "CMPXI   = (123, 45)            / complex integer";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "CMPXI".to_string(),
+                value: CardValue::ComplexInteger(123, 45),
+                comment: Some("complex integer".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_complex_float() {
+        let header = "CMPXF   = (1.0, -1.0)         / complex float";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "CMPXF".to_string(),
+                value: CardValue::ComplexFloat(1.0, -1.0),
+                comment: Some("complex float".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_complex_float_exp() {
+        let header = "CMPXE   = (1.23E2, -4.56E-1)  / complex float with exponents";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "CMPXE".to_string(),
+                value: CardValue::ComplexFloat(1.23e2, -4.56e-1),
+                comment: Some("complex float with exponents".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_comment() {
+        let header = "COMMENT   Observation taken during director's discretionary time";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Comment("Observation taken during director's discretionary time".to_string())
+        );
+    }
+
+    #[test]
+    fn test_history() {
+        let header = "HISTORY   Reduced with banzai";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(card, Card::History("Reduced with banzai".to_string()));
+    }
+
+    #[test]
+    fn test_blank() {
+        let header = "";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(card, Card::Blank);
+    }
+
+    #[test]
+    fn test_blank_with_content() {
+        let header = "          blank keyword";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(card, Card::Comment("blank keyword".to_string()));
+    }
+
+    #[test]
+    fn test_end() {
+        let header = "END";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(card, Card::End)
+    }
 }
