@@ -1,4 +1,4 @@
-use crate::error::Error;
+use crate::{error::Error, extension::XtensionType};
 
 pub struct RawCard([u8; 80]);
 
@@ -78,6 +78,10 @@ pub enum Card {
         value: CardValue,
         comment: Option<String>,
     },
+    Xtension {
+        x: XtensionType,
+        comment: Option<String>,
+    },
     Blank,
     End,
 }
@@ -101,22 +105,33 @@ impl TryFrom<RawCard> for Card {
                 let (value, comment) = parse_continue(raw.after_keyword())?;
                 Ok(Card::Continue { value, comment })
             }
-            "XTENSION" => todo!(),
+            "XTENSION" => {
+                if raw.value_indicator() != "= " {
+                    return Err(Error::InvalidCard(
+                        "XTENSION card is missing value indicator '= '".into(),
+                    ));
+                }
+                let (rest, s) = parse_string(raw.value_comment())?;
+                let x = s.parse::<XtensionType>()?;
+                Ok(Card::Xtension {
+                    x,
+                    comment: extract_comment(rest),
+                })
+            }
             "HIERARCH" => todo!(),
             _ => {
-                if raw.value_indicator() == "= " {
-                    let (value, comment) = parse_value(raw.value_comment())?;
-                    Ok(Card::Value {
-                        keyword: raw.keyword().to_owned(),
-                        value,
-                        comment,
-                    })
-                } else {
-                    Err(Error::InvalidCard(format!(
+                if raw.value_indicator() != "= " {
+                    return Err(Error::InvalidCard(format!(
                         "unrecognized keyword '{}' without value indicator",
                         raw.keyword()
-                    )))
+                    )));
                 }
+                let (value, comment) = parse_value(raw.value_comment())?;
+                Ok(Card::Value {
+                    keyword: raw.keyword().to_owned(),
+                    value,
+                    comment,
+                })
             }
         }
     }
@@ -145,8 +160,8 @@ fn parse_value(input: &str) -> Result<(CardValue, Option<String>), Error> {
 
     // strings are the only type where '/' can appear in the value itself
     if trimmed.starts_with('\'') {
-        let (rest, value) = parse_string(input).map_err(|e| Error::InvalidCard(e.to_string()))?;
-        return Ok((value, extract_comment(rest)));
+        let (rest, s) = parse_string(input).map_err(|e| Error::InvalidCard(e.to_string()))?;
+        return Ok((CardValue::String(s), extract_comment(rest)));
     }
 
     let (value_str, comment) = split_value_comment(trimmed);
@@ -164,9 +179,8 @@ fn parse_value(input: &str) -> Result<(CardValue, Option<String>), Error> {
 
 // 4.2.1.2: byte 9 is a required space, bytes 10–80 are a string value field
 fn parse_continue(input: &str) -> Result<(CardValue, Option<String>), Error> {
-    let (rest, value) = parse_string(input)?;
-    let comment = extract_comment(rest);
-    Ok((value, comment))
+    let (rest, s) = parse_string(input)?;
+    Ok((CardValue::String(s), extract_comment(rest)))
 }
 
 fn split_value_comment(input: &str) -> (&str, Option<String>) {
@@ -186,7 +200,7 @@ fn extract_comment(input: &str) -> Option<String> {
 /// 4.2.1.1
 /// A single quote is represented within a string as two successive single quotes
 /// e.g., O’HARA = 'O''HARA'
-fn parse_string(input: &str) -> Result<(&str, CardValue), Error> {
+fn parse_string(input: &str) -> Result<(&str, String), Error> {
     let inner = input
         .trim_start()
         .strip_prefix('\'')
@@ -206,7 +220,7 @@ fn parse_string(input: &str) -> Result<(&str, CardValue), Error> {
             Some((i, '\'')) => {
                 // end of the string, the rest of the content is probably a comment
                 let rest = &inner[i + 1..];
-                return Ok((rest, CardValue::String(out.trim_end().to_string())));
+                return Ok((rest, out.trim_end().to_string()));
             }
             Some((_, c)) => out.push(c),
         }
@@ -674,6 +688,48 @@ mod tests {
                 value: CardValue::String("final segment".to_string()),
                 comment: Some("continuation comment".to_string())
             }
+        );
+    }
+
+    #[test]
+    fn test_xtension_image() {
+        let header = "XTENSION= 'IMAGE   '           / image extension";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Xtension {
+                x: XtensionType::Image,
+                comment: Some("image extension".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_xtension_unknown() {
+        let header = "XTENSION= 'UNKNOWN '";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let result = Card::try_from(card);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unknown XTENSION type")
+        );
+    }
+
+    #[test]
+    fn test_xtension_malformed() {
+        let header = "XTENSION= IMAGE";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let result = Card::try_from(card);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("expected opening quote")
         );
     }
 }
