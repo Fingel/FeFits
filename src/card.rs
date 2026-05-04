@@ -1,0 +1,379 @@
+use crate::error::Error;
+
+pub struct RawCard([u8; 80]);
+
+impl RawCard {
+    /// 4.1.2.1. Keyword name (Bytes 1 through 8), trimmed of trailing spaces
+    pub fn keyword(&self) -> &str {
+        // SAFETY: constructor validates all bytes are printable ASCII (0x20–0x7E)
+        unsafe { std::str::from_utf8_unchecked(&self.0[0..8]).trim_ascii_end() }
+    }
+
+    /// 4.1.2.2. Value indicator (Bytes 9 and 10)
+    pub fn value_indicator(&self) -> &str {
+        // SAFETY: constructor validates all bytes are printable ASCII (0x20–0x7E)
+        unsafe { std::str::from_utf8_unchecked(&self.0[8..10]) }
+    }
+
+    /// 4.1.2.3. Value/comment (Bytes 11 through 80)
+    pub fn value_comment(&self) -> &str {
+        // SAFETY: constructor validates all bytes are printable ASCII (0x20–0x7E)
+        unsafe { std::str::from_utf8_unchecked(&self.0[10..80]) }
+    }
+}
+
+impl TryFrom<&[u8; 80]> for RawCard {
+    type Error = Error;
+    fn try_from(bytes: &[u8; 80]) -> Result<Self, Self::Error> {
+        if !bytes.iter().all(|&b| is_fits_printable(b)) {
+            return Err(Error::InvalidCard(format!(
+                "Card contains non-printable ASCII characters: {:?}",
+                bytes
+            )));
+        }
+        Ok(RawCard(*bytes))
+    }
+}
+
+/// Section 3.3.1
+/// Validate that bytes are printable ASCII characters
+fn is_fits_printable(b: u8) -> bool {
+    // Astropy allows tab so we might want to add that here.
+    b.is_ascii() && !b.is_ascii_control()
+}
+
+#[derive(Debug, PartialEq)]
+pub enum CardValue {
+    String(String),
+    Logical(bool),
+    Integer(i64),
+    Float(f64),
+    ComplexInteger(i64, i64),
+    ComplexFloat(f64, f64),
+    Undefined,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Card {
+    Value {
+        keyword: String,
+        value: CardValue,
+        comment: Option<String>,
+    },
+    Comment(String), // bytes 9–80, no value indicator
+    History(String), // bytes 9–80, no value indicator
+    Continue {
+        value: String,
+        comment: Option<String>,
+    },
+    Hierarch {
+        keys: Vec<String>,
+        value: CardValue,
+        comment: Option<String>,
+    },
+    Blank,
+    End,
+}
+
+impl TryFrom<RawCard> for Card {
+    type Error = Error;
+    fn try_from(raw: RawCard) -> Result<Self, Self::Error> {
+        validate_keyword(raw.keyword())?;
+        match raw.keyword() {
+            "" => {
+                if raw.value_comment().trim().is_empty() {
+                    Ok(Card::Blank)
+                } else {
+                    Ok(Card::Comment(parse_comment_string(raw.value_comment())))
+                }
+            }
+            "END" => Ok(Card::End),
+            "COMMENT" => Ok(Card::Comment(parse_comment_string(raw.value_comment()))),
+            "HISTORY" => Ok(Card::History(parse_comment_string(raw.value_comment()))),
+            "CONTINUE" => todo!(),
+            "XTENSION" => todo!(),
+            "HIERARCH" => todo!(),
+            _ => {
+                if raw.value_indicator() == "= " {
+                    let (value, comment) = parse_value(raw.value_comment())?;
+                    Ok(Card::Value {
+                        keyword: raw.keyword().to_owned(),
+                        value,
+                        comment,
+                    })
+                } else {
+                    Err(Error::InvalidCard(format!(
+                        "unrecognized keyword '{}' without value indicator",
+                        raw.keyword()
+                    )))
+                }
+            }
+        }
+    }
+}
+
+/// 4.1.2.1
+fn validate_keyword(kw: &str) -> Result<(), Error> {
+    if kw
+        .bytes()
+        .all(|b| matches!(b, b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-'))
+    {
+        Ok(())
+    } else {
+        Err(Error::InvalidCard(format!(
+            "invalid keyword characters: '{kw}'"
+        )))
+    }
+}
+
+fn parse_comment_string(value: &str) -> String {
+    value.trim_ascii_end().to_owned()
+}
+
+fn parse_value(input: &str) -> Result<(CardValue, Option<String>), Error> {
+    let trimmed = input.trim_start();
+
+    // strings are the only type where '/' can appear in the value itself
+    if trimmed.starts_with('\'') {
+        let (rest, value) = parse_string(input).map_err(|e| Error::InvalidCard(e.to_string()))?;
+        return Ok((value, extract_comment(rest)));
+    }
+
+    let (value_str, comment) = split_value_comment(trimmed);
+    let value_str = value_str.trim();
+    let value = match value_str.chars().next() {
+        None => CardValue::Undefined,
+        Some('(') => parse_complex(value_str)?,
+        Some('T') => CardValue::Logical(true),
+        Some('F') => CardValue::Logical(false),
+        _ => parse_number(value_str)?,
+    };
+
+    Ok((value, comment))
+}
+
+fn split_value_comment(input: &str) -> (&str, Option<String>) {
+    match input.find('/') {
+        Some(i) => (input[..i].trim(), extract_comment(&input[i..])),
+        None => (input, None),
+    }
+}
+
+fn extract_comment(input: &str) -> Option<String> {
+    input
+        .trim_start()
+        .strip_prefix('/')
+        .map(|s| s.trim().to_string())
+}
+
+/// 4.2.1.1
+/// A single quote is represented within a string as two successive single quotes
+/// e.g., O’HARA = 'O''HARA'
+fn parse_string(input: &str) -> Result<(&str, CardValue), Error> {
+    let inner = input
+        .trim_start()
+        .strip_prefix('\'')
+        .ok_or_else(|| Error::InvalidCard("expected opening quote".into()))?;
+
+    let mut chars = inner.char_indices().peekable();
+    let mut out = String::new();
+
+    loop {
+        match chars.next() {
+            None => return Err(Error::InvalidCard("unclosed string".into())),
+            Some((_, '\'')) if chars.peek().map(|(_, c)| *c) == Some('\'') => {
+                // This is an escaped quote, consume the next quote and add one quote to the output
+                chars.next();
+                out.push('\'');
+            }
+            Some((i, '\'')) => {
+                // end of the string, the rest of the content is probably a comment
+                let rest = &inner[i + 1..];
+                return Ok((rest, CardValue::String(out.trim_end().to_string())));
+            }
+            Some((_, c)) => out.push(c),
+        }
+    }
+}
+/// 4.2.4 The exponent, if present, consists of an exponent
+/// letter followed by an integer. Letters in the exponential form
+/// (’E’ or ’D’) shall be upper case.
+fn is_float_str(s: &str) -> bool {
+    let u = s.to_ascii_uppercase();
+    u.contains('.') || u.contains('E') || u.contains('D')
+}
+
+/// 4.2.5 complex integer, 4.2.6 complex floating-point
+fn parse_complex(input: &str) -> Result<CardValue, Error> {
+    let close = input
+        .find(')')
+        .ok_or_else(|| Error::InvalidCard("unclosed complex".into()))?;
+    let inner = &input[1..close];
+
+    let comma = inner
+        .find(',')
+        .ok_or_else(|| Error::InvalidCard("complex missing comma".into()))?;
+    let a = inner[..comma].trim();
+    let b = inner[comma + 1..].trim();
+
+    if is_float_str(a) || is_float_str(b) {
+        Ok(CardValue::ComplexFloat(parse_float(a)?, parse_float(b)?))
+    } else {
+        Ok(CardValue::ComplexInteger(
+            a.parse()
+                .map_err(|_| Error::InvalidCard(format!("invalid complex component: {a}")))?,
+            b.parse()
+                .map_err(|_| Error::InvalidCard(format!("invalid complex component: {b}")))?,
+        ))
+    }
+}
+
+/// 4.2.3 integer, 4.2.4 real floating-point
+fn parse_number(s: &str) -> Result<CardValue, Error> {
+    if is_float_str(s) {
+        Ok(CardValue::Float(parse_float(s)?))
+    } else {
+        s.parse::<i64>()
+            .map(CardValue::Integer)
+            .map_err(|_| Error::InvalidCard(format!("invalid integer: {s}")))
+    }
+}
+
+/// 4.2.4 (footnote 4) d/D normalised to E for parsing
+fn parse_float(s: &str) -> Result<f64, Error> {
+    s.replace(['d', 'D'], "E")
+        .parse::<f64>()
+        .map_err(|_| Error::InvalidCard(format!("invalid float: {s}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn right_pad(s: &str) -> [u8; 80] {
+        let mut bytes = [b' '; 80];
+        let s_bytes = s.as_bytes();
+        bytes[..s_bytes.len()].copy_from_slice(s_bytes);
+        bytes
+    }
+
+    #[test]
+    fn test_rawcard_constructor() {
+        // Good case
+        let valid = right_pad("SIMPLE  =                    T / FITS STANDARD");
+        assert!(RawCard::try_from(&valid).is_ok());
+
+        // Non-printbale ascii
+        let invalid = right_pad("SIMPLE  =                   T / FITS STANDARD\x7F");
+        assert!(RawCard::try_from(&invalid).is_err());
+
+        // Newline
+        let invalid = right_pad("SIMPLE  =    \n               T / FITS STANDARD");
+        assert!(RawCard::try_from(&invalid).is_err());
+    }
+
+    #[test]
+    fn test_rawcard_contructor_tab() {
+        let invalid = right_pad("SIMPLE  =    \t               T / FITS STANDARD");
+        assert!(RawCard::try_from(&invalid).is_err());
+    }
+
+    #[test]
+    fn test_mangled_keyword() {
+        // keyword needs to be 8 bytes
+        let invalid = right_pad("SHORT=                  foo / bar");
+        let card = RawCard::try_from(&invalid).unwrap();
+        let card = Card::try_from(card);
+        let err = card.unwrap_err();
+        assert!(err.to_string().contains("invalid keyword characters"));
+    }
+
+    #[test]
+    fn test_logical_true() {
+        let header = "SIMPLE  =                    T / FITS STANDARD";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "SIMPLE".to_string(),
+                value: CardValue::Logical(true),
+                comment: Some("FITS STANDARD".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_logical_false() {
+        let header = "RUST    =                    F / FITS STANDARD";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "RUST".to_string(),
+                value: CardValue::Logical(false),
+                comment: Some("FITS STANDARD".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_integer() {
+        let header = "BITPIX  =                   16 / bits per pixel";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "BITPIX".to_string(),
+                value: CardValue::Integer(16),
+                comment: Some("bits per pixel".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_integer_no_value() {
+        let header = "NAXIS   =                    0 / no data";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "NAXIS".to_string(),
+                value: CardValue::Integer(0),
+                comment: Some("no data".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_integer_no_comment() {
+        let header = "NAXIS1  =                  800";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "NAXIS1".to_string(),
+                value: CardValue::Integer(800),
+                comment: None
+            }
+        );
+    }
+    #[test]
+    fn test_integer_negative() {
+        let header = "OFFSET  =                -2048 / negative value";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "OFFSET".to_string(),
+                value: CardValue::Integer(-2048),
+                comment: Some("negative value".to_string())
+            }
+        );
+    }
+}

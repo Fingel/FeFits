@@ -18,4 +18,6 @@ pub enum Error {
     ChecksumMismatch { expected: u32, actual: u32 },
     #[error("Type mismatch: {0}")]
     TypeMismatch(String), // TODO Split into structured variants: Actual/expected
+    #[error("UTF-8 encoding error: {0}")]
+    EncodingError(#[from] std::str::Utf8Error),
 }
