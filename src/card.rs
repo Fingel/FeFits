@@ -362,6 +362,7 @@ mod tests {
             }
         );
     }
+
     #[test]
     fn test_integer_negative() {
         let header = "OFFSET  =                -2048 / negative value";
@@ -373,6 +374,171 @@ mod tests {
                 keyword: "OFFSET".to_string(),
                 value: CardValue::Integer(-2048),
                 comment: Some("negative value".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_float() {
+        let header = "BSCALE  =                  1.0";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "BSCALE".to_string(),
+                value: CardValue::Float(1.0),
+                comment: None
+            }
+        );
+    }
+
+    #[test]
+    fn test_float_exp_notation() {
+        let header = "CRVAL1  =      1.23456789E+02  / exponential notation";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "CRVAL1".to_string(),
+                value: CardValue::Float(1.23456789e02),
+                comment: Some("exponential notation".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_float_fortran_notation() {
+        let header = "CRVAL2  =      2.50000000D-01  / D-exponent from Fortran";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "CRVAL2".to_string(),
+                value: CardValue::Float(2.50000000e-01),
+                comment: Some("D-exponent from Fortran".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_float_negative_w_exp() {
+        let header = "CDELT1  =     -2.77777777E-04  / negative with exponent";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "CDELT1".to_string(),
+                value: CardValue::Float(-2.77777777E-04),
+                comment: Some("negative with exponent".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_string_with_escaped_quote() {
+        let header = "OBSERVER= 'O''Brien'           / embedded quote unescapes";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "OBSERVER".to_string(),
+                value: CardValue::String("O'Brien".to_string()),
+                comment: Some("embedded quote unescapes".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_empty_string() {
+        let header = "EMPTY   = ''                   / null string";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "EMPTY".to_string(),
+                value: CardValue::String("".to_string()),
+                comment: Some("null string".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_string_leading_spaces() {
+        let header = "NOTES   = '  leading spaces'   / leading spaces are significant";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "NOTES".to_string(),
+                value: CardValue::String("  leading spaces".to_string()),
+                comment: Some("leading spaces are significant".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_string_trailing_spaces() {
+        let header = "TRIMMED = 'trailing   '        / trailing spaces stripped";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "TRIMMED".to_string(),
+                value: CardValue::String("trailing".to_string()),
+                comment: Some("trailing spaces stripped".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_string_slash() {
+        let header = "SLASH   = 'FOO/BAR'            / slash in both value and comment";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "SLASH".to_string(),
+                value: CardValue::String("FOO/BAR".to_string()),
+                comment: Some("slash in both value and comment".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_undefind_with_comment() {
+        let header = "UNDEF   =                      / blank value field with comment";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "UNDEF".to_string(),
+                value: CardValue::Undefined,
+                comment: Some("blank value field with comment".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_undefind_without_comment() {
+        let header = "UNDEF2  =";
+        let card = RawCard::try_from(&right_pad(header)).unwrap();
+        let card = Card::try_from(card).unwrap();
+        assert_eq!(
+            card,
+            Card::Value {
+                keyword: "UNDEF2".to_string(),
+                value: CardValue::Undefined,
+                comment: None
             }
         );
     }
