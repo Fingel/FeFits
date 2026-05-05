@@ -49,7 +49,7 @@ fn is_fits_printable(b: u8) -> bool {
     b.is_ascii() && !b.is_ascii_control()
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum CardValue {
     String(String),
     Logical(bool),
@@ -60,7 +60,7 @@ pub enum CardValue {
     Undefined,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Card {
     Value {
         keyword: String,

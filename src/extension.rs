@@ -3,7 +3,7 @@ use std::str::FromStr;
 use crate::error::Error;
 
 /// 4.4.1.2 XTENSION keyword values identifying the HDU type.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum XtensionType {
     Image,
 }
