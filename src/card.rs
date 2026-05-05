@@ -160,7 +160,7 @@ fn parse_value(input: &str) -> Result<(CardValue, Option<String>), Error> {
 
     // strings are the only type where '/' can appear in the value itself
     if trimmed.starts_with('\'') {
-        let (rest, s) = parse_string(input).map_err(|e| Error::InvalidCard(e.to_string()))?;
+        let (rest, s) = parse_string(input)?;
         return Ok((CardValue::String(s), extract_comment(rest)));
     }
 
@@ -194,7 +194,7 @@ fn extract_comment(input: &str) -> Option<String> {
     input
         .trim_start()
         .strip_prefix('/')
-        .map(|s| s.trim().to_string())
+        .map(|s| s.trim_ascii_end().to_string())
 }
 
 /// 4.2.1.1
@@ -343,7 +343,7 @@ mod tests {
             Card::Value {
                 keyword: "SIMPLE".to_string(),
                 value: CardValue::Logical(true),
-                comment: Some("FITS STANDARD".to_string())
+                comment: Some(" FITS STANDARD".to_string())
             }
         );
     }
@@ -358,7 +358,7 @@ mod tests {
             Card::Value {
                 keyword: "RUST".to_string(),
                 value: CardValue::Logical(false),
-                comment: Some("FITS STANDARD".to_string())
+                comment: Some(" FITS STANDARD".to_string())
             }
         );
     }
@@ -373,7 +373,7 @@ mod tests {
             Card::Value {
                 keyword: "BITPIX".to_string(),
                 value: CardValue::Integer(16),
-                comment: Some("bits per pixel".to_string())
+                comment: Some(" bits per pixel".to_string())
             }
         );
     }
@@ -388,7 +388,7 @@ mod tests {
             Card::Value {
                 keyword: "NAXIS".to_string(),
                 value: CardValue::Integer(0),
-                comment: Some("no data".to_string())
+                comment: Some(" no data".to_string())
             }
         );
     }
@@ -418,7 +418,7 @@ mod tests {
             Card::Value {
                 keyword: "OFFSET".to_string(),
                 value: CardValue::Integer(-2048),
-                comment: Some("negative value".to_string())
+                comment: Some(" negative value".to_string())
             }
         );
     }
@@ -448,7 +448,7 @@ mod tests {
             Card::Value {
                 keyword: "CRVAL1".to_string(),
                 value: CardValue::Float(1.23456789e02),
-                comment: Some("exponential notation".to_string())
+                comment: Some(" exponential notation".to_string())
             }
         );
     }
@@ -463,7 +463,7 @@ mod tests {
             Card::Value {
                 keyword: "CRVAL2".to_string(),
                 value: CardValue::Float(2.50000000e-01),
-                comment: Some("D-exponent from Fortran".to_string())
+                comment: Some(" D-exponent from Fortran".to_string())
             }
         );
     }
@@ -478,7 +478,7 @@ mod tests {
             Card::Value {
                 keyword: "CDELT1".to_string(),
                 value: CardValue::Float(-2.77777777E-04),
-                comment: Some("negative with exponent".to_string())
+                comment: Some(" negative with exponent".to_string())
             }
         );
     }
@@ -493,7 +493,7 @@ mod tests {
             Card::Value {
                 keyword: "OBSERVER".to_string(),
                 value: CardValue::String("O'Brien".to_string()),
-                comment: Some("embedded quote unescapes".to_string())
+                comment: Some(" embedded quote unescapes".to_string())
             }
         );
     }
@@ -508,7 +508,7 @@ mod tests {
             Card::Value {
                 keyword: "EMPTY".to_string(),
                 value: CardValue::String("".to_string()),
-                comment: Some("null string".to_string())
+                comment: Some(" null string".to_string())
             }
         );
     }
@@ -523,7 +523,7 @@ mod tests {
             Card::Value {
                 keyword: "NOTES".to_string(),
                 value: CardValue::String("  leading spaces".to_string()),
-                comment: Some("leading spaces are significant".to_string())
+                comment: Some(" leading spaces are significant".to_string())
             }
         );
     }
@@ -538,7 +538,7 @@ mod tests {
             Card::Value {
                 keyword: "TRIMMED".to_string(),
                 value: CardValue::String("trailing".to_string()),
-                comment: Some("trailing spaces stripped".to_string())
+                comment: Some(" trailing spaces stripped".to_string())
             }
         );
     }
@@ -553,7 +553,7 @@ mod tests {
             Card::Value {
                 keyword: "SLASH".to_string(),
                 value: CardValue::String("FOO/BAR".to_string()),
-                comment: Some("slash in both value and comment".to_string())
+                comment: Some(" slash in both value and comment".to_string())
             }
         );
     }
@@ -577,7 +577,7 @@ mod tests {
             Card::Value {
                 keyword: "UNDEF".to_string(),
                 value: CardValue::Undefined,
-                comment: Some("blank value field with comment".to_string())
+                comment: Some(" blank value field with comment".to_string())
             }
         );
     }
@@ -607,7 +607,7 @@ mod tests {
             Card::Value {
                 keyword: "CMPXI".to_string(),
                 value: CardValue::ComplexInteger(123, 45),
-                comment: Some("complex integer".to_string())
+                comment: Some(" complex integer".to_string())
             }
         );
     }
@@ -622,7 +622,7 @@ mod tests {
             Card::Value {
                 keyword: "CMPXF".to_string(),
                 value: CardValue::ComplexFloat(1.0, -1.0),
-                comment: Some("complex float".to_string())
+                comment: Some(" complex float".to_string())
             }
         );
     }
@@ -637,7 +637,7 @@ mod tests {
             Card::Value {
                 keyword: "CMPXE".to_string(),
                 value: CardValue::ComplexFloat(1.23e2, -4.56e-1),
-                comment: Some("complex float with exponents".to_string())
+                comment: Some(" complex float with exponents".to_string())
             }
         );
     }
@@ -718,7 +718,7 @@ mod tests {
             card,
             Card::Continue {
                 value: CardValue::String("final segment".to_string()),
-                comment: Some("continuation comment".to_string())
+                comment: Some(" continuation comment".to_string())
             }
         );
     }
@@ -732,7 +732,7 @@ mod tests {
             card,
             Card::Xtension {
                 x: XtensionType::Image,
-                comment: Some("image extension".to_string())
+                comment: Some(" image extension".to_string())
             }
         );
     }
