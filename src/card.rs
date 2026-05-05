@@ -160,7 +160,7 @@ fn parse_value(input: &str) -> Result<(CardValue, Option<String>), Error> {
 
     // strings are the only type where '/' can appear in the value itself
     if trimmed.starts_with('\'') {
-        let (rest, s) = parse_string(input)?;
+        let (rest, s) = parse_string(trimmed)?;
         return Ok((CardValue::String(s), extract_comment(rest)));
     }
 
