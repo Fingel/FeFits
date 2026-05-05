@@ -185,7 +185,7 @@ fn parse_continue(input: &str) -> Result<(CardValue, Option<String>), Error> {
 
 fn split_value_comment(input: &str) -> (&str, Option<String>) {
     match input.find('/') {
-        Some(i) => (input[..i].trim(), extract_comment(&input[i..])),
+        Some(i) => (&input[..i], extract_comment(&input[i..])),
         None => (input, None),
     }
 }
