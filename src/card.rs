@@ -73,11 +73,6 @@ pub enum Card {
         value: CardValue,
         comment: Option<String>,
     },
-    Hierarch {
-        keys: Vec<String>,
-        value: CardValue,
-        comment: Option<String>,
-    },
     Xtension {
         x: XtensionType,
         comment: Option<String>,
@@ -118,7 +113,6 @@ impl TryFrom<RawCard> for Card {
                     comment: extract_comment(rest),
                 })
             }
-            "HIERARCH" => todo!(),
             _ => {
                 if raw.value_indicator() != "= " {
                     return Err(Error::InvalidCard(format!(
