@@ -7,6 +7,7 @@ impl Card {
             Card::End => Ok(encode_end()),
             Card::Blank => Ok(encode_blank()),
             Card::Comment(s) => Ok(encode_comment(s)),
+            Card::History(s) => Ok(encode_history(s)),
             _ => unimplemented!(),
         }
     }
@@ -25,6 +26,14 @@ fn encode_blank() -> [u8; 80] {
 fn encode_comment(s: &str) -> [u8; 80] {
     let mut bytes = [b' '; 80];
     bytes[..8].copy_from_slice(b"COMMENT ");
+    let len = s.len().min(72);
+    bytes[8..8 + len].copy_from_slice(&s.as_bytes()[..len]);
+    bytes
+}
+
+fn encode_history(s: &str) -> [u8; 80] {
+    let mut bytes = [b' '; 80];
+    bytes[..8].copy_from_slice(b"HISTORY ");
     let len = s.len().min(72);
     bytes[8..8 + len].copy_from_slice(&s.as_bytes()[..len]);
     bytes
@@ -59,6 +68,16 @@ mod tests {
         let card = Card::Comment(text.to_string());
         let encoded = card.encode().unwrap();
         assert_eq!(&encoded[..8], b"COMMENT ");
+        assert_eq!(&encoded[8..8 + text.len()], text.as_bytes());
+        assert!(is_blank(&encoded[8 + text.len()..]));
+    }
+
+    #[test]
+    fn test_history() {
+        let text = "History teaches us";
+        let card = Card::History(text.to_string());
+        let encoded = card.encode().unwrap();
+        assert_eq!(&encoded[..8], b"HISTORY ");
         assert_eq!(&encoded[8..8 + text.len()], text.as_bytes());
         assert!(is_blank(&encoded[8 + text.len()..]));
     }
