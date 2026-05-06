@@ -21,3 +21,5 @@ pub enum Error {
     #[error("UTF-8 encoding error: {0}")]
     EncodingError(#[from] std::str::Utf8Error),
 }
+
+pub type Result<T> = std::result::Result<T, Error>;

@@ -1,4 +1,7 @@
-use crate::{error::Error, extension::XtensionType};
+use crate::{
+    error::{Error, Result},
+    extension::XtensionType,
+};
 
 pub struct RawCard([u8; 80]);
 
@@ -31,7 +34,7 @@ impl RawCard {
 
 impl TryFrom<&[u8; 80]> for RawCard {
     type Error = Error;
-    fn try_from(bytes: &[u8; 80]) -> Result<Self, Self::Error> {
+    fn try_from(bytes: &[u8; 80]) -> Result<Self> {
         if !bytes.iter().all(|&b| is_fits_printable(b)) {
             return Err(Error::InvalidCard(format!(
                 "Card contains non-printable ASCII characters: {:?}",
@@ -83,7 +86,7 @@ pub enum Card {
 
 impl TryFrom<RawCard> for Card {
     type Error = Error;
-    fn try_from(raw: RawCard) -> Result<Self, Self::Error> {
+    fn try_from(raw: RawCard) -> Result<Self> {
         validate_keyword(raw.keyword())?;
         match raw.keyword() {
             "" => {
@@ -132,7 +135,7 @@ impl TryFrom<RawCard> for Card {
 }
 
 /// 4.1.2.1
-fn validate_keyword(kw: &str) -> Result<(), Error> {
+fn validate_keyword(kw: &str) -> Result<()> {
     if kw
         .bytes()
         .all(|b| matches!(b, b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-'))
@@ -149,7 +152,7 @@ fn parse_comment_string(value: &str) -> String {
     value.trim_ascii_end().to_owned()
 }
 
-fn parse_value(input: &str) -> Result<(CardValue, Option<String>), Error> {
+fn parse_value(input: &str) -> Result<(CardValue, Option<String>)> {
     let trimmed = input.trim_start();
 
     // strings are the only type where '/' can appear in the value itself
@@ -172,7 +175,7 @@ fn parse_value(input: &str) -> Result<(CardValue, Option<String>), Error> {
 }
 
 // 4.2.1.2: byte 9 is a required space, bytes 10–80 are a string value field
-fn parse_continue(input: &str) -> Result<(CardValue, Option<String>), Error> {
+fn parse_continue(input: &str) -> Result<(CardValue, Option<String>)> {
     let (rest, s) = parse_string(input)?;
     Ok((CardValue::String(s), extract_comment(rest)))
 }
@@ -194,7 +197,7 @@ fn extract_comment(input: &str) -> Option<String> {
 /// 4.2.1.1
 /// A single quote is represented within a string as two successive single quotes
 /// e.g., O’HARA = 'O''HARA'
-fn parse_string(input: &str) -> Result<(&str, String), Error> {
+fn parse_string(input: &str) -> Result<(&str, String)> {
     let inner = input
         .trim_start()
         .strip_prefix('\'')
@@ -229,7 +232,7 @@ fn is_float_str(s: &str) -> bool {
 }
 
 /// 4.2.5 complex integer, 4.2.6 complex floating-point
-fn parse_complex(input: &str) -> Result<CardValue, Error> {
+fn parse_complex(input: &str) -> Result<CardValue> {
     let close = input
         .find(')')
         .ok_or_else(|| Error::InvalidCard("unclosed complex".into()))?;
@@ -254,7 +257,7 @@ fn parse_complex(input: &str) -> Result<CardValue, Error> {
 }
 
 /// 4.2.3 integer, 4.2.4 real floating-point
-fn parse_number(s: &str) -> Result<CardValue, Error> {
+fn parse_number(s: &str) -> Result<CardValue> {
     if is_float_str(s) {
         Ok(CardValue::Float(parse_float(s)?))
     } else {
@@ -265,7 +268,7 @@ fn parse_number(s: &str) -> Result<CardValue, Error> {
 }
 
 /// 4.2.4 (footnote 4) d/D normalised to E for parsing
-fn parse_float(s: &str) -> Result<f64, Error> {
+fn parse_float(s: &str) -> Result<f64> {
     s.replace(['d', 'D'], "E")
         .parse::<f64>()
         .map_err(|_| Error::InvalidCard(format!("invalid float: {s}")))
