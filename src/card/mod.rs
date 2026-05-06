@@ -3,6 +3,8 @@ use crate::{
     extension::XtensionType,
 };
 
+mod encode;
+
 pub struct RawCard([u8; 80]);
 
 impl RawCard {
