@@ -75,7 +75,7 @@ pub enum Card {
     Comment(String), // bytes 9–80, no value indicator
     History(String), // bytes 9–80, no value indicator
     Continue {
-        value: CardValue,
+        value: String,
         comment: Option<String>,
     },
     Xtension {
@@ -177,9 +177,9 @@ fn parse_value(input: &str) -> Result<(CardValue, Option<String>)> {
 }
 
 // 4.2.1.2: byte 9 is a required space, bytes 10–80 are a string value field
-fn parse_continue(input: &str) -> Result<(CardValue, Option<String>)> {
+fn parse_continue(input: &str) -> Result<(String, Option<String>)> {
     let (rest, s) = parse_string(input)?;
-    Ok((CardValue::String(s), extract_comment(rest)))
+    Ok((s, extract_comment(rest)))
 }
 
 fn split_value_comment(input: &str) -> (&str, Option<String>) {
@@ -702,7 +702,7 @@ mod tests {
         assert_eq!(
             card,
             Card::Continue {
-                value: CardValue::String(" over multiple keyword cards.".to_string()),
+                value: " over multiple keyword cards.".to_string(),
                 comment: None
             }
         );
@@ -716,7 +716,7 @@ mod tests {
         assert_eq!(
             card,
             Card::Continue {
-                value: CardValue::String("final segment".to_string()),
+                value: "final segment".to_string(),
                 comment: Some(" continuation comment".to_string())
             }
         );

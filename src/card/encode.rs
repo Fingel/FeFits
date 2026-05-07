@@ -18,7 +18,7 @@ impl Card {
                 comment,
             } => encode_value(keyword, value, comment),
             Card::Xtension { x, comment } => encode_xtension(x, comment),
-            _ => unimplemented!(),
+            Card::Continue { value, comment } => encode_continue(value, comment),
         }
     }
 }
@@ -65,10 +65,32 @@ fn encode_value(keyword: &str, value: &CardValue, comment: &Option<String>) -> R
         Some(c) => format!("{v} / {c}"),
         None => v,
     };
-    let combined_bytes = combined.as_bytes();
-    let len = combined_bytes.len().min(70);
-    bytes[10..10 + len].copy_from_slice(&combined_bytes[..len]);
+    let len = combined.len().min(70);
+    bytes[10..10 + len].copy_from_slice(&combined.as_bytes()[..len]);
     Ok(bytes)
+}
+
+fn encode_continue(value: &str, comment: &Option<String>) -> Result<[u8; 80]> {
+    let escaped = value.replace('\'', "''");
+    let quoted = format!("'{escaped}'");
+    if quoted.len() > 71 {
+        return Err(Error::InvalidCard(
+            "encoded continue value too long for card".into(),
+        ));
+    }
+    let combined = match comment {
+        Some(c) => format!("{quoted} / {c}"),
+        None => quoted,
+    };
+    let mut bytes = [b' '; 80];
+    bytes[..9].copy_from_slice(b"CONTINUE ");
+    let len = combined.len().min(71);
+    bytes[9..9 + len].copy_from_slice(&combined.as_bytes()[..len]);
+    Ok(bytes)
+}
+
+fn encode_xtension(x: &XtensionType, comment: &Option<String>) -> Result<[u8; 80]> {
+    encode_value("XTENSION", &CardValue::String(x.to_string()), comment)
 }
 
 fn format_value(value: &CardValue) -> Result<String> {
@@ -89,10 +111,6 @@ fn format_value(value: &CardValue) -> Result<String> {
         }
     };
     Ok(result)
-}
-
-fn encode_xtension(x: &XtensionType, comment: &Option<String>) -> Result<[u8; 80]> {
-    encode_value("XTENSION", &CardValue::String(x.to_string()), comment)
 }
 
 fn format_float(f: f64) -> Result<String> {
@@ -346,5 +364,17 @@ mod tests {
         };
         let encoded = card.encode().unwrap();
         assert!(&encoded.starts_with(b"XTENSION= 'IMAGE   '"));
+    }
+
+    #[test]
+    fn test_continue() {
+        let card = Card::Continue {
+            value: "...and that's how I lost $1m".to_string(),
+            comment: Some("continued string".to_string()),
+        };
+        let encoded = card.encode().unwrap();
+        assert!(
+            &encoded.starts_with(b"CONTINUE '...and that''s how I lost $1m' / continued string")
+        );
     }
 }
