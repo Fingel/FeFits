@@ -195,6 +195,8 @@ mod tests {
         let mut reader = BlockReader::new(&block.as_bytes()[..card_bytes]);
         let result = Header::read_from_block_reader(&mut reader);
         assert!(result.is_err());
-        assert!(matches!(result, Err(Error::InvalidHeader(_))));
+        assert!(
+            matches!(result, Err(Error::InvalidHeader(msg)) if msg.contains("missing END card"))
+        );
     }
 }
