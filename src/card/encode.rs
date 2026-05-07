@@ -172,6 +172,21 @@ mod tests {
     }
 
     #[test]
+    fn test_value_string_too_long() {
+        let card = Card::Value {
+            keyword: "LONG".to_string(),
+            value: CardValue::String("a".repeat(100)),
+            comment: None,
+        };
+        let encoded = card.encode();
+        assert!(encoded.is_err());
+        assert!(matches!(
+            encoded.err().unwrap(),
+            Error::InvalidCard(msg) if msg.contains("encoded value too long")
+        ));
+    }
+
+    #[test]
     fn test_value_string_escaped() {
         let card = Card::Value {
             keyword: "OBJECT".to_string(),
@@ -222,6 +237,18 @@ mod tests {
         assert!(
             &encoded.starts_with(b"NAXIS1  =                  650 / Width of table row in bytes")
         );
+    }
+
+    #[test]
+    fn test_value_logical() {
+        let card = Card::Value {
+            keyword: "DETECT".to_string(),
+            value: CardValue::Logical(true),
+            comment: Some("Object detected in image".to_string()),
+        };
+        let encoded = card.encode().unwrap();
+        dbg!(std::str::from_utf8(&encoded).unwrap());
+        assert!(&encoded.starts_with(b"DETECT  =                    T / Object detected in image"));
     }
 
     #[test]
@@ -276,6 +303,39 @@ mod tests {
         expected.extend(std::iter::repeat_n('a', comment_space));
         assert_eq!(encoded.len(), 80);
         assert_eq!(&encoded, expected.as_bytes());
+    }
+
+    #[test]
+    fn test_value_complex_int() {
+        let card = Card::Value {
+            keyword: "COMPLEX".to_string(),
+            value: CardValue::ComplexInteger(1, -1),
+            comment: None,
+        };
+        let encoded = card.encode().unwrap();
+        assert!(&encoded.starts_with(b"COMPLEX = (1, -1)"));
+    }
+
+    #[test]
+    fn test_value_complex_float() {
+        let card = Card::Value {
+            keyword: "COMPLEX".to_string(),
+            value: CardValue::ComplexFloat(1.234, -0.4321),
+            comment: None,
+        };
+        let encoded = card.encode().unwrap();
+        assert!(&encoded.starts_with(b"COMPLEX = (1.234, -0.4321)"));
+    }
+
+    #[test]
+    fn test_value_undefined() {
+        let card = Card::Value {
+            keyword: "UNDEF".to_string(),
+            value: CardValue::Undefined,
+            comment: None,
+        };
+        let encoded = card.encode().unwrap();
+        assert!(&encoded.starts_with(b"UNDEF   =                    "));
     }
 
     #[test]
