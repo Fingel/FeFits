@@ -5,7 +5,7 @@ use crate::{
 
 mod encode;
 
-pub struct RawCard([u8; 80]);
+struct RawCard([u8; 80]);
 
 impl RawCard {
     /// 4.1.2.1. Keyword name (Bytes 1 through 8), trimmed of trailing spaces
@@ -147,6 +147,13 @@ impl TryFrom<RawCard> for Card {
                 })
             }
         }
+    }
+}
+
+impl TryFrom<&[u8; 80]> for Card {
+    type Error = Error;
+    fn try_from(bytes: &[u8; 80]) -> Result<Self> {
+        Card::try_from(RawCard::try_from(bytes)?)
     }
 }
 
