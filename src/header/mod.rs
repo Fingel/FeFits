@@ -1,6 +1,12 @@
+use std::io::Read;
+
 use indexmap::IndexMap;
 
-use crate::card::Card;
+use crate::{
+    card::Card,
+    error::{Error, Result},
+    io::BlockReader,
+};
 
 #[derive(Debug, Default)]
 pub struct Header {
@@ -9,6 +15,10 @@ pub struct Header {
 }
 
 impl Header {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn get(&self, keyword: &str) -> Option<&Card> {
         self.map
             .get(&keyword.to_uppercase())
@@ -54,11 +64,33 @@ impl Header {
             }
         }
     }
+
+    pub fn read_from_block_reader<R: Read>(reader: &mut BlockReader<R>) -> Result<(Header, u64)> {
+        let mut header = Header::new();
+        let blocks_before = reader.blocks_read;
+        loop {
+            let block = reader.read_block().map_err(|e| match e {
+                Error::Io(io) if io.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    Error::InvalidHeader("missing END card before EOF".into())
+                }
+                other => other,
+            })?;
+            for record in block.records() {
+                let card = Card::try_from(record)?;
+                let is_end = card == Card::End;
+                header.append(card);
+                if is_end {
+                    let blocks_consumed = reader.blocks_read - blocks_before;
+                    return Ok((header, blocks_consumed));
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::card::CardValue;
+    use crate::{card::CardValue, io::Block};
 
     use super::*;
 
@@ -70,9 +102,17 @@ mod tests {
         }
     }
 
+    fn make_block(cards: &[Card]) -> Block {
+        let mut block = Block::zeroed();
+        for (i, card) in cards.iter().enumerate() {
+            block.set_record(i, &card.encode().unwrap());
+        }
+        block
+    }
+
     #[test]
     fn test_append_remove() {
-        let mut header = Header::default();
+        let mut header = Header::new();
         let card1 = build_card("KEYWORD1", "VALUE1", Some("Comment1"));
         let card2 = build_card("KEYWORD2", "VALUE2", Some("Comment2"));
         header.append(card1.clone());
@@ -93,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_multiple_values() {
-        let mut header = Header::default();
+        let mut header = Header::new();
         let card1 = build_card("KEYWORD", "VALUE1", Some("Comment1"));
         let card2 = build_card("KEYWORD", "VALUE2", Some("Comment2"));
         header.append(card1.clone());
@@ -112,7 +152,7 @@ mod tests {
 
     #[test]
     fn test_set() {
-        let mut header = Header::default();
+        let mut header = Header::new();
         let card1 = build_card("KEYWORD", "VALUE1", Some("Comment1"));
         let card2 = build_card("KEYWORD", "VALUE2", Some("Comment2"));
         let card3 = build_card("KEYWORD2", "VALUE3", Some("Comment3"));
@@ -126,5 +166,35 @@ mod tests {
         header.set(card3.clone());
         assert_eq!(header.get("KEYWORD"), Some(&card2));
         assert_eq!(header.get("KEYWORD2"), Some(&card3));
+    }
+
+    #[test]
+    fn read_from_block_reader() {
+        let cards = vec![
+            build_card("KEYWORD1", "VALUE1", Some("Comment1")),
+            build_card("KEYWORD2", "VALUE2", Some("Comment2")),
+            Card::End,
+        ];
+        let block = make_block(&cards);
+        let mut reader = BlockReader::new(block.as_bytes());
+        let (header, blocks_consumed) = Header::read_from_block_reader(&mut reader).unwrap();
+        assert_eq!(blocks_consumed, 1);
+        assert_eq!(header.get("KEYWORD1"), Some(&cards[0]));
+        assert_eq!(header.get("KEYWORD2"), Some(&cards[1]));
+    }
+
+    #[test]
+    /// Trims block to the end of the cards to test EOF handling when END is missing
+    fn read_from_block_reader_no_end() {
+        let cards = vec![
+            build_card("KEYWORD1", "VALUE1", Some("Comment1")),
+            build_card("KEYWORD2", "VALUE2", Some("Comment2")),
+        ];
+        let block = make_block(&cards);
+        let card_bytes = cards.len() * 80;
+        let mut reader = BlockReader::new(&block.as_bytes()[..card_bytes]);
+        let result = Header::read_from_block_reader(&mut reader);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(Error::InvalidHeader(_))));
     }
 }

@@ -28,6 +28,12 @@ impl Block {
     pub fn records(&self) -> impl Iterator<Item = &[u8; 80]> {
         self.0.as_chunks::<80>().0.iter()
     }
+
+    pub fn set_record(&mut self, index: usize, record: &[u8; 80]) {
+        let start = index * 80;
+        let end = start + 80;
+        self.0[start..end].copy_from_slice(record);
+    }
 }
 
 pub fn blocks_needed(n: u64) -> u64 {
@@ -44,7 +50,7 @@ pub fn padding_bytes(n: u64) -> u64 {
 
 pub struct BlockReader<R: Read> {
     inner: R,
-    blocks_read: u64,
+    pub blocks_read: u64,
 }
 
 impl<R: Read> BlockReader<R> {
