@@ -98,6 +98,29 @@ impl Card {
             Card::End => "END",
         }
     }
+
+    pub fn value(&self) -> Option<&CardValue> {
+        match self {
+            Card::Value { value, .. } => Some(value),
+            _ => None,
+        }
+    }
+
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Card::Comment(text) | Card::History(text) => Some(text),
+            _ => None,
+        }
+    }
+
+    pub fn comment(&self) -> Option<&str> {
+        match self {
+            Card::Value { comment, .. } => comment.as_deref(),
+            Card::Continue { comment, .. } => comment.as_deref(),
+            Card::Xtension { comment, .. } => comment.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 impl TryFrom<RawCard> for Card {
