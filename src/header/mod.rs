@@ -3,7 +3,7 @@ use std::io::Read;
 use indexmap::IndexMap;
 
 use crate::{
-    card::Card,
+    card::{Card, CardValue},
     error::{Error, Result},
     io::BlockReader,
 };
@@ -78,13 +78,50 @@ impl Header {
             for record in block.records() {
                 let card = Card::try_from(record)?;
                 let is_end = card == Card::End;
-                header.append(card);
+                if !header.stitch_continue(&card) {
+                    header.append(card);
+                }
                 if is_end {
                     let blocks_consumed = reader.blocks_read - blocks_before;
                     return Ok((header, blocks_consumed));
                 }
             }
         }
+    }
+
+    /// 4.2.1.2 Continued string (long-string) keywords
+    fn stitch_continue(&mut self, card: &Card) -> bool {
+        // we hit a CONTINUE card
+        if let Card::Continue { value: cont, comment: cont_comment } = card
+            // ... and the previous card is a string value
+            && let Some(Card::Value {
+                value: CardValue::String(s),
+                comment,
+                ..
+            }) = self.cards.last_mut()
+            // ... and the string ends with '&'
+            && s.ends_with('&')
+        {
+            s.pop();
+            s.push_str(cont); // ... concat the val to the previous string
+            // Comments also get continued
+            if let Some(cont_comment) = cont_comment {
+                match comment {
+                    Some(c) if c.ends_with('&') => {
+                        c.pop();
+                        c.push_str(cont_comment);
+                    }
+                    Some(c) => {
+                        c.push(' ');
+                        c.push_str(cont_comment);
+                    }
+                    None => *comment = Some(cont_comment.clone()),
+                }
+            }
+            return true;
+        }
+
+        false
     }
 }
 
@@ -198,5 +235,92 @@ mod tests {
         assert!(
             matches!(result, Err(Error::InvalidHeader(msg)) if msg.contains("missing END card"))
         );
+    }
+
+    #[test]
+    fn test_continue_stitching() {
+        let cards = vec![
+            Card::Value {
+                keyword: "LONGSTR".to_string(),
+                value: CardValue::String("hello &".to_string()),
+                comment: None,
+            },
+            Card::Continue {
+                value: "world".to_string(),
+                comment: Some("the comment".to_string()),
+            },
+            Card::End,
+        ];
+        let block = make_block(&cards);
+        let mut reader = BlockReader::new(block.as_bytes());
+        let (header, _) = Header::read_from_block_reader(&mut reader).unwrap();
+        assert_eq!(
+            header.get("LONGSTR"),
+            Some(&Card::Value {
+                keyword: "LONGSTR".to_string(),
+                value: CardValue::String("hello world".to_string()),
+                comment: Some("the comment".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn test_multiple_continue_stitching() {
+        let cards = vec![
+            Card::Value {
+                keyword: "LONGSTR".to_string(),
+                value: CardValue::String("nothing &".to_string()),
+                comment: Some("youth".to_string()),
+            },
+            Card::Continue {
+                value: "is &".to_string(),
+                comment: Some("is".to_string()),
+            },
+            Card::Continue {
+                value: "permanent".to_string(),
+                comment: Some("fleeting".to_string()),
+            },
+            Card::End,
+        ];
+        let block = make_block(&cards);
+        let mut reader = BlockReader::new(block.as_bytes());
+        let (header, _) = Header::read_from_block_reader(&mut reader).unwrap();
+        assert_eq!(
+            header.get("LONGSTR"),
+            Some(&Card::Value {
+                keyword: "LONGSTR".to_string(),
+                value: CardValue::String("nothing is permanent".to_string()),
+                comment: Some("youth is fleeting".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn test_orphaned_continue() {
+        let cards = vec![
+            Card::Value {
+                keyword: "STRKEY".to_string(),
+                value: CardValue::String("no ampersand".to_string()),
+                comment: None,
+            },
+            Card::Continue {
+                value: "orphaned".to_string(),
+                comment: None,
+            },
+            Card::End,
+        ];
+        let block = make_block(&cards);
+        let mut reader = BlockReader::new(block.as_bytes());
+        let (header, _) = Header::read_from_block_reader(&mut reader).unwrap();
+        assert_eq!(
+            header.get("STRKEY"),
+            Some(&Card::Value {
+                keyword: "STRKEY".to_string(),
+                value: CardValue::String("no ampersand".to_string()),
+                comment: None,
+            })
+        );
+        // orphaned continue gets appended anyway
+        assert!(header.get("CONTINUE").is_some());
     }
 }
