@@ -50,6 +50,12 @@ fn encode_history(s: &str) -> [u8; 80] {
 }
 
 fn encode_value(keyword: &str, value: &CardValue, comment: &Option<String>) -> Result<[u8; 80]> {
+    let kw_len = keyword.len();
+    if kw_len > 8 {
+        return Err(Error::InvalidCard(format!(
+            "keyword too long for card: '{keyword}'"
+        )));
+    }
     let v = format_value(value)?;
     if v.len() > 70 {
         return Err(Error::InvalidCard(format!(
@@ -57,7 +63,6 @@ fn encode_value(keyword: &str, value: &CardValue, comment: &Option<String>) -> R
         )));
     }
     let mut bytes = [b' '; 80];
-    let kw_len = keyword.len().min(8);
     bytes[..kw_len].copy_from_slice(&keyword.as_bytes()[..kw_len]);
     bytes[8] = b'=';
     bytes[9] = b' ';
@@ -251,7 +256,6 @@ mod tests {
             comment: Some("Width of table row in bytes".to_string()),
         };
         let encoded = card.encode().unwrap();
-        dbg!(std::str::from_utf8(&encoded).unwrap());
         assert!(
             &encoded.starts_with(b"NAXIS1  =                  650 / Width of table row in bytes")
         );
@@ -265,7 +269,6 @@ mod tests {
             comment: Some("Object detected in image".to_string()),
         };
         let encoded = card.encode().unwrap();
-        dbg!(std::str::from_utf8(&encoded).unwrap());
         assert!(&encoded.starts_with(b"DETECT  =                    T / Object detected in image"));
     }
 
@@ -277,7 +280,6 @@ mod tests {
             comment: Some("Exposure time in seconds".to_string()),
         };
         let encoded = card.encode().unwrap();
-        dbg!(std::str::from_utf8(&encoded).unwrap());
         assert!(&encoded.starts_with(b"EXPTIME = 60.0 / Exposure time in seconds"));
     }
 
@@ -289,7 +291,6 @@ mod tests {
             comment: Some("Exposure time in seconds".to_string()),
         };
         let encoded = card.encode().unwrap();
-        dbg!(std::str::from_utf8(&encoded).unwrap());
         assert!(&encoded.starts_with(b"EXPTIME = 0.0601234 / Exposure time in seconds"));
     }
 
@@ -301,7 +302,6 @@ mod tests {
             comment: Some("Exposure time in seconds".to_string()),
         };
         let encoded = card.encode().unwrap();
-        dbg!(std::str::from_utf8(&encoded).unwrap());
         assert!(&encoded.starts_with(b"EXPTIME = 6.01234e16 / Exposure time in seconds"));
     }
 
@@ -321,6 +321,21 @@ mod tests {
         expected.extend(std::iter::repeat_n('a', comment_space));
         assert_eq!(encoded.len(), 80);
         assert_eq!(&encoded, expected.as_bytes());
+    }
+
+    #[test]
+    fn test_non_finite_float() {
+        let card = Card::Value {
+            keyword: "EXPTIME".to_string(),
+            value: CardValue::Float(f64::NAN),
+            comment: None,
+        };
+        let result = card.encode();
+        assert!(result.is_err());
+        assert!(matches!(
+            result.err().unwrap(),
+            Error::InvalidCard(msg) if msg.contains("non-finite float value")
+        ));
     }
 
     #[test]

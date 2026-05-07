@@ -283,7 +283,7 @@ mod tests {
     fn right_pad(s: &str) -> [u8; 80] {
         let mut bytes = [b' '; 80];
         let s_bytes = s.as_bytes();
-        bytes[..s_bytes.len()].copy_from_slice(s_bytes);
+        bytes[..s_bytes.len().min(80)].copy_from_slice(s_bytes);
         bytes
     }
 
