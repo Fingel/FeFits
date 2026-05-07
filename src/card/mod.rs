@@ -86,6 +86,20 @@ pub enum Card {
     End,
 }
 
+impl Card {
+    pub fn keyword(&self) -> &str {
+        match self {
+            Card::Value { keyword, .. } => keyword,
+            Card::Comment(_) => "COMMENT",
+            Card::History(_) => "HISTORY",
+            Card::Continue { .. } => "CONTINUE",
+            Card::Xtension { .. } => "XTENSION",
+            Card::Blank => "",
+            Card::End => "END",
+        }
+    }
+}
+
 impl TryFrom<RawCard> for Card {
     type Error = Error;
     fn try_from(raw: RawCard) -> Result<Self> {
