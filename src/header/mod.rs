@@ -17,6 +17,18 @@ impl Header {
         Self::default()
     }
 
+    pub fn cards(&self) -> impl Iterator<Item = &Card> {
+        self.cards.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.cards.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.cards.is_empty()
+    }
+
     pub fn get(&self, keyword: &str) -> Option<&Card> {
         self.map
             .get(&keyword.to_uppercase())
@@ -63,29 +75,6 @@ impl Header {
         }
     }
 
-    fn update_indices(&mut self, from_idx: usize, increment: bool) {
-        let increment: i64 = if increment { 1 } else { -1 };
-        for index_sets in self.map.values_mut() {
-            for idx in index_sets.iter_mut() {
-                if *idx >= from_idx {
-                    *idx = (*idx as i64 + increment) as usize;
-                }
-            }
-        }
-    }
-
-    pub fn cards(&self) -> impl Iterator<Item = &Card> {
-        self.cards.iter()
-    }
-
-    pub fn len(&self) -> usize {
-        self.cards.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.cards.is_empty()
-    }
-
     pub fn read_from_block_reader<R: Read>(reader: &mut BlockReader<R>) -> Result<(Header, u64)> {
         let mut header = Header::new();
         let blocks_before = reader.blocks_read;
@@ -105,6 +94,17 @@ impl Header {
                 if is_end {
                     let blocks_consumed = reader.blocks_read - blocks_before;
                     return Ok((header, blocks_consumed));
+                }
+            }
+        }
+    }
+
+    fn update_indices(&mut self, from_idx: usize, increment: bool) {
+        let increment: i64 = if increment { 1 } else { -1 };
+        for index_sets in self.map.values_mut() {
+            for idx in index_sets.iter_mut() {
+                if *idx >= from_idx {
+                    *idx = (*idx as i64 + increment) as usize;
                 }
             }
         }
