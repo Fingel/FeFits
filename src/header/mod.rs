@@ -127,6 +127,17 @@ impl Header {
         }
     }
 
+    pub fn naxisn(&self, n: usize) -> Result<u64> {
+        let naxis = format!("NAXIS{n}");
+        match self.get_value(&naxis) {
+            None => Err(Error::InvalidHeader(format!("missing NAXIS{n} keyword"))),
+            Some(CardValue::Integer(i)) if *i >= 0 => Ok(*i as u64),
+            Some(_) => Err(Error::InvalidHeader(format!(
+                "NAXIS{n} value must be a non-negative integer"
+            ))),
+        }
+    }
+
     fn update_indices(&mut self, from_idx: usize, increment: bool) {
         let increment: i64 = if increment { 1 } else { -1 };
         for index_sets in self.map.values_mut() {
@@ -496,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn test_naxis_out_of_range() {
+    fn test_naxis_invalid() {
         let mut header = Header::new();
         assert!(matches!(
             header.naxis(),
@@ -532,5 +543,56 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn test_naxisn() {
+        let mut header = Header::new();
+        let naxis = Card::Value {
+            keyword: "NAXIS".to_string(),
+            value: CardValue::Integer(2),
+            comment: None,
+        };
+        let naxis1 = Card::Value {
+            keyword: "NAXIS1".to_string(),
+            value: CardValue::Integer(800),
+            comment: None,
+        };
+        let naxis2 = Card::Value {
+            keyword: "NAXIS2".to_string(),
+            value: CardValue::Integer(600),
+            comment: None,
+        };
+
+        header.append(naxis);
+        header.append(naxis1);
+        header.append(naxis2);
+
+        assert_eq!(header.naxisn(1).unwrap(), 800);
+        assert_eq!(header.naxisn(2).unwrap(), 600);
+    }
+
+    #[test]
+    fn test_naxisn_invalid() {
+        let mut header = Header::new();
+        assert!(
+            matches!(header.naxisn(1), Err(Error::InvalidHeader(msg)) if msg.contains("missing NAXIS1 keyword"))
+        );
+        let naxis = Card::Value {
+            keyword: "NAXIS".to_string(),
+            value: CardValue::Integer(1),
+            comment: None,
+        };
+        let naxis1 = Card::Value {
+            keyword: "NAXIS1".to_string(),
+            value: CardValue::Integer(-800),
+            comment: None,
+        };
+        header.append(naxis);
+        header.append(naxis1);
+
+        assert!(
+            matches!(header.naxisn(1), Err(Error::InvalidHeader(msg)) if msg.contains("NAXIS1 value must be a non-negative integer"))
+        );
     }
 }
