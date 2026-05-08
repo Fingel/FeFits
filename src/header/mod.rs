@@ -4,6 +4,7 @@ use crate::{
     Bitpix,
     card::{Card, CardValue},
     error::{Error, Result},
+    extension::XtensionType,
     io::BlockReader,
 };
 
@@ -135,6 +136,18 @@ impl Header {
             Some(_) => Err(Error::InvalidHeader(format!(
                 "NAXIS{n} value must be a non-negative integer"
             ))),
+        }
+    }
+
+    pub fn xtension(&self) -> Result<XtensionType> {
+        match self.get("XTENSION") {
+            None => Err(Error::MissingKeyword("XTENSION")),
+            Some(Card::Xtension { x, .. }) => Ok(*x),
+            Some(_) => Err(Error::InvalidKeywordValue {
+                keyword: "XTENSION",
+                value: "non-string".into(),
+                reason: "must be a recognized extension type string",
+            }),
         }
     }
 
@@ -594,5 +607,39 @@ mod tests {
         assert!(
             matches!(header.naxisn(1), Err(Error::InvalidHeader(msg)) if msg.contains("NAXIS1 value must be a non-negative integer"))
         );
+    }
+
+    #[test]
+    fn test_xtension() {
+        let mut header = Header::new();
+        let card = Card::Xtension {
+            x: XtensionType::Image,
+            comment: None,
+        };
+        header.append(card);
+        assert_eq!(header.xtension().unwrap(), XtensionType::Image);
+    }
+
+    #[test]
+    fn test_xtension_invalid() {
+        let mut header = Header::new();
+        assert!(matches!(
+            header.xtension(),
+            Err(Error::MissingKeyword("XTENSION"))
+        ));
+
+        header.append(Card::Value {
+            keyword: "XTENSION".to_string(),
+            value: CardValue::String("IMAGE".to_string()),
+            comment: None,
+        });
+        assert!(matches!(
+            header.xtension(),
+            Err(Error::InvalidKeywordValue {
+                keyword: "XTENSION",
+                reason: "must be a recognized extension type string",
+                ..
+            })
+        ));
     }
 }
