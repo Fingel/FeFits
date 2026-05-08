@@ -27,6 +27,13 @@ impl Header {
         self.get(keyword)?.value()
     }
 
+    pub fn find(&self, pattern: &str) -> impl Iterator<Item = &Card> + '_ {
+        let pattern = pattern.to_uppercase();
+        self.cards
+            .iter()
+            .filter(move |card| glob_match(pattern.as_bytes(), card.keyword().as_bytes()))
+    }
+
     pub fn append(&mut self, card: Card) {
         let index = self.cards.len();
         self.map
@@ -136,6 +143,24 @@ impl Header {
         }
 
         false
+    }
+}
+
+// Wildcard matcher
+// empty pattern => text must also be empty
+// '*' => matches zero chars (skip it) OR one char (advance text, retry)
+// '?' => matches exactly one char
+// byte => must equal the current text byte
+fn glob_match(pattern: &[u8], text: &[u8]) -> bool {
+    if pattern.is_empty() {
+        return text.is_empty();
+    }
+    match pattern[0] {
+        b'*' => {
+            glob_match(&pattern[1..], text) || (!text.is_empty() && glob_match(pattern, &text[1..]))
+        }
+        b'?' => !text.is_empty() && glob_match(&pattern[1..], &text[1..]),
+        byte => !text.is_empty() && byte == text[0] && glob_match(&pattern[1..], &text[1..]),
     }
 }
 
@@ -336,5 +361,27 @@ mod tests {
         );
         // orphaned continue gets appended anyway
         assert!(header.get("CONTINUE").is_some());
+    }
+
+    #[test]
+    fn test_find() {
+        let mut header = Header::new();
+        header.append(build_card("NAXIS", "0", None));
+        header.append(build_card("NAXIS1", "800", None));
+        header.append(build_card("NAXIS2", "600", None));
+        header.append(build_card("SIMPLE", "T", None));
+
+        let keywords: Vec<_> = header.find("NAX*").map(|c| c.keyword()).collect();
+        assert_eq!(keywords, ["NAXIS", "NAXIS1", "NAXIS2"]);
+
+        let keywords: Vec<_> = header.find("NAXIS?").map(|c| c.keyword()).collect();
+        assert_eq!(keywords, ["NAXIS1", "NAXIS2"]);
+
+        assert_eq!(header.find("SIMPLE").count(), 1);
+        assert_eq!(header.find("MISSING").count(), 0);
+
+        // case insensitive
+        let keywords: Vec<_> = header.find("nax*").map(|c| c.keyword()).collect();
+        assert_eq!(keywords, ["NAXIS", "NAXIS1", "NAXIS2"]);
     }
 }
