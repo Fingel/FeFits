@@ -65,6 +65,40 @@ pub enum CardValue {
     Undefined,
 }
 
+impl CardValue {
+    pub fn as_str(&self) -> Option<&str> {
+        if let CardValue::String(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_integer(&self) -> Option<i64> {
+        if let CardValue::Integer(n) = self {
+            Some(*n)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_float(&self) -> Option<f64> {
+        if let CardValue::Float(f) = self {
+            Some(*f)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        if let CardValue::Logical(b) = self {
+            Some(*b)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Card {
     Value {
@@ -806,5 +840,18 @@ mod tests {
                 .to_string()
                 .contains("expected opening quote")
         );
+    }
+
+    #[test]
+    fn test_card_value_accessors() {
+        assert_eq!(CardValue::String("hi".into()).as_str(), Some("hi"));
+        assert_eq!(CardValue::Integer(42).as_integer(), Some(42));
+        assert_eq!(CardValue::Float(42.24).as_float(), Some(42.24));
+        assert_eq!(CardValue::Logical(true).as_bool(), Some(true));
+
+        assert_eq!(CardValue::Integer(1).as_str(), None);
+        assert_eq!(CardValue::String("x".into()).as_integer(), None);
+        assert_eq!(CardValue::Logical(false).as_float(), None);
+        assert_eq!(CardValue::Float(1.0).as_bool(), None);
     }
 }

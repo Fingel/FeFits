@@ -23,6 +23,10 @@ impl Header {
             .and_then(|indices| self.cards.get(*indices.first()?))
     }
 
+    pub fn get_value(&self, keyword: &str) -> Option<&CardValue> {
+        self.get(keyword)?.value()
+    }
+
     pub fn append(&mut self, card: Card) {
         let index = self.cards.len();
         self.map
