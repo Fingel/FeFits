@@ -63,6 +63,18 @@ impl Header {
         }
     }
 
+    pub fn cards(&self) -> impl Iterator<Item = &Card> {
+        self.cards.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.cards.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.cards.is_empty()
+    }
+
     pub fn read_from_block_reader<R: Read>(reader: &mut BlockReader<R>) -> Result<(Header, u64)> {
         let mut header = Header::new();
         let blocks_before = reader.blocks_read;

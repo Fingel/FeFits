@@ -1,9 +1,23 @@
+use std::fmt;
+
 use super::Card;
 use crate::{
     card::CardValue,
     error::{Error, Result},
     extension::XtensionType,
 };
+
+impl fmt::Display for Card {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.encode() {
+            Ok(bytes) => {
+                let s = std::str::from_utf8(&bytes).expect("encode always produces ASCII");
+                write!(f, "{}", s.trim_end())
+            }
+            Err(e) => write!(f, "<invalid card: {e}>"),
+        }
+    }
+}
 
 impl Card {
     pub fn encode(&self) -> Result<[u8; 80]> {
