@@ -1,6 +1,7 @@
 use std::{collections::HashMap, io::Read};
 
 use crate::{
+    Bitpix,
     card::{Card, CardValue},
     error::{Error, Result},
     io::BlockReader,
@@ -96,6 +97,20 @@ impl Header {
                     return Ok((header, blocks_consumed));
                 }
             }
+        }
+    }
+
+    // Mandatory keywords
+
+    pub fn bitpix(&self) -> Result<Bitpix> {
+        match self.get_value("BITPIX") {
+            None => Err(Error::MissingKeyword("BITPIX")),
+            Some(CardValue::Integer(i)) => (*i).try_into(),
+            Some(_) => Err(Error::InvalidKeywordValue {
+                keyword: "BITPIX",
+                value: "non-integer".into(),
+                reason: "must be an integer",
+            }),
         }
     }
 
@@ -383,5 +398,75 @@ mod tests {
         // case insensitive
         let keywords: Vec<_> = header.find("nax*").map(|c| c.keyword()).collect();
         assert_eq!(keywords, ["NAXIS", "NAXIS1", "NAXIS2"]);
+    }
+
+    #[test]
+    fn test_bitpix_parsing() {
+        let mut header = Header::new();
+        let card = Card::Value {
+            keyword: "BITPIX".to_string(),
+            value: CardValue::Integer(16),
+            comment: None,
+        };
+        header.append(card);
+        assert_eq!(header.bitpix().unwrap(), Bitpix::SignedShort);
+
+        let card = Card::Value {
+            keyword: "BITPIX".to_string(),
+            value: CardValue::Integer(-32),
+            comment: None,
+        };
+        header.set(card);
+        assert_eq!(header.bitpix().unwrap(), Bitpix::Float);
+    }
+
+    #[test]
+    fn test_invalid_bitpix() {
+        // Missing
+        let mut header = Header::new();
+        assert!(matches!(
+            header.bitpix(),
+            Err(Error::MissingKeyword("BITPIX"))
+        ));
+
+        // Invalid type
+        header.set(build_card("BITPIX", "invalid", None));
+        assert!(matches!(
+            header.bitpix(),
+            Err(Error::InvalidKeywordValue {
+                keyword: "BITPIX",
+                ..
+            })
+        ));
+
+        // Invalid type (float)
+        let card = Card::Value {
+            keyword: "BITPIX".to_string(),
+            value: CardValue::Float(64.0),
+            comment: None,
+        };
+        header.set(card);
+        assert!(matches!(
+            header.bitpix(),
+            Err(Error::InvalidKeywordValue {
+                keyword: "BITPIX",
+                ..
+            })
+        ));
+
+        // Invalid integer
+        let card = Card::Value {
+            keyword: "BITPIX".to_string(),
+            value: CardValue::Integer(99),
+            comment: None,
+        };
+        header.set(card);
+        assert!(matches!(
+            header.bitpix(),
+            Err(Error::InvalidKeywordValue {
+                keyword: "BITPIX",
+                ..
+            })
+        ));
     }
 }

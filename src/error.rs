@@ -9,7 +9,15 @@ pub enum Error {
     #[error("Invalid Card: {0}")]
     InvalidCard(String),
     #[error("InvalidHeader: {0}")]
-    InvalidHeader(String), // TODO: MissingKeyword, InvalidKeyword, etc
+    InvalidHeader(String),
+    #[error("Missing required keyword: {0}")]
+    MissingKeyword(&'static str),
+    #[error("Keyword {keyword} has invalid value: {value}: {reason}")]
+    InvalidKeywordValue {
+        keyword: &'static str,
+        value: String,
+        reason: &'static str,
+    },
     #[error("InvalidHDU: {0}")]
     InvalidHDU(String), // TODO split into structured variants: UnknownXtension type
     #[error("Unsupported Feature: {0}")]
