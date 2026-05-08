@@ -100,7 +100,7 @@ impl Header {
         }
     }
 
-    // Mandatory keywords
+    // 4.4.1 Mandatory keywords
 
     pub fn bitpix(&self) -> Result<Bitpix> {
         match self.get_value("BITPIX") {
@@ -110,6 +110,19 @@ impl Header {
                 keyword: "BITPIX",
                 value: "non-integer".into(),
                 reason: "must be an integer",
+            }),
+        }
+    }
+
+    pub fn naxis(&self) -> Result<usize> {
+        match self.get_value("NAXIS") {
+            None => Err(Error::MissingKeyword("NAXIS")),
+            // 4.4.1 The value field shall contain a non-negative integer no greater than 999
+            Some(CardValue::Integer(i)) if (0..=999).contains(i) => Ok(*i as usize),
+            Some(_) => Err(Error::InvalidKeywordValue {
+                keyword: "NAXIS",
+                value: "non-integer".into(),
+                reason: "must be an integer between 0 and 999",
             }),
         }
     }
@@ -465,6 +478,57 @@ mod tests {
             header.bitpix(),
             Err(Error::InvalidKeywordValue {
                 keyword: "BITPIX",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_naxis() {
+        let mut header = Header::new();
+        let card = Card::Value {
+            keyword: "NAXIS".to_string(),
+            value: CardValue::Integer(2),
+            comment: None,
+        };
+        header.append(card);
+        assert_eq!(header.naxis().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_naxis_out_of_range() {
+        let mut header = Header::new();
+        assert!(matches!(
+            header.naxis(),
+            Err(Error::MissingKeyword("NAXIS"))
+        ));
+
+        let card = Card::Value {
+            keyword: "NAXIS".to_string(),
+            value: CardValue::Integer(1000),
+            comment: None,
+        };
+        header.append(card);
+        assert!(matches!(
+            header.naxis(),
+            Err(Error::InvalidKeywordValue {
+                keyword: "NAXIS",
+                reason: "must be an integer between 0 and 999",
+                ..
+            })
+        ));
+
+        let card = Card::Value {
+            keyword: "NAXIS".to_string(),
+            value: CardValue::Integer(-1),
+            comment: None,
+        };
+        header.set(card);
+        assert!(matches!(
+            header.naxis(),
+            Err(Error::InvalidKeywordValue {
+                keyword: "NAXIS",
+                reason: "must be an integer between 0 and 999",
                 ..
             })
         ));
