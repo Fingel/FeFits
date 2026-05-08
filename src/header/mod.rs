@@ -1,6 +1,4 @@
-use std::io::Read;
-
-use indexmap::IndexMap;
+use std::{collections::HashMap, io::Read};
 
 use crate::{
     card::{Card, CardValue},
@@ -11,7 +9,7 @@ use crate::{
 #[derive(Debug, Default)]
 pub struct Header {
     cards: Vec<Card>,
-    map: IndexMap<String, Vec<usize>>,
+    map: HashMap<String, Vec<usize>>,
 }
 
 impl Header {
@@ -39,7 +37,7 @@ impl Header {
         let indices = self.map.get_mut(&keyword)?;
         let index = indices.remove(0);
         if indices.is_empty() {
-            self.map.shift_remove(&keyword);
+            self.map.remove(&keyword);
         }
         self.update_indices(index, false);
         Some(self.cards.remove(index))
