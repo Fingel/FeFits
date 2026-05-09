@@ -2,10 +2,10 @@ use std::{collections::HashMap, io::Read};
 
 use crate::{
     Bitpix,
-    card::{Card, CardValue},
+    card::{Card, CardValue, long_string::stitch_continue},
     error::{Error, Result},
     extension::XtensionType,
-    io::BlockReader,
+    io::{BlockReader, BlockWriter},
 };
 
 #[derive(Debug, Default)]
@@ -90,7 +90,7 @@ impl Header {
             for record in block.records() {
                 let card = Card::try_from(record)?;
                 let is_end = card == Card::End;
-                if !header.stitch_continue(&card) {
+                if !stitch_continue(header.cards.last_mut(), &card) {
                     header.append(card);
                 }
                 if is_end {
@@ -99,6 +99,26 @@ impl Header {
                 }
             }
         }
+    }
+
+    pub fn write_to_writer<W: std::io::Write>(&self, writer: &mut W) -> Result<u64> {
+        let mut bw = BlockWriter::new(writer);
+        let mut has_end = false;
+        for card in &self.cards {
+            if matches!(card, Card::End) {
+                has_end = true;
+            }
+            for record in card.encode_records()? {
+                bw.write_record(&record)?;
+            }
+            if has_end {
+                break;
+            }
+        }
+        if !has_end {
+            bw.write_record(&Card::End.encode()?)?;
+        }
+        bw.finish()
     }
 
     // 4.4.1 Mandatory keywords
@@ -160,41 +180,6 @@ impl Header {
                 }
             }
         }
-    }
-
-    /// 4.2.1.2 Continued string (long-string) keywords
-    fn stitch_continue(&mut self, card: &Card) -> bool {
-        // we hit a CONTINUE card
-        if let Card::Continue { value: cont, comment: cont_comment } = card
-            // ... and the previous card is a string value
-            && let Some(Card::Value {
-                value: CardValue::String(s),
-                comment,
-                ..
-            }) = self.cards.last_mut()
-            // ... and the string ends with '&'
-            && s.ends_with('&')
-        {
-            s.pop();
-            s.push_str(cont); // ... concat the val to the previous string
-            // Comments also get continued
-            if let Some(cont_comment) = cont_comment {
-                match comment {
-                    Some(c) if c.ends_with('&') => {
-                        c.pop();
-                        c.push_str(cont_comment);
-                    }
-                    Some(c) => {
-                        c.push(' ');
-                        c.push_str(cont_comment);
-                    }
-                    None => *comment = Some(cont_comment.clone()),
-                }
-            }
-            return true;
-        }
-
-        false
     }
 }
 
@@ -325,64 +310,6 @@ mod tests {
         assert!(result.is_err());
         assert!(
             matches!(result, Err(Error::InvalidHeader(msg)) if msg.contains("missing END card"))
-        );
-    }
-
-    #[test]
-    fn test_continue_stitching() {
-        let cards = vec![
-            Card::Value {
-                keyword: "LONGSTR".to_string(),
-                value: CardValue::String("hello &".to_string()),
-                comment: None,
-            },
-            Card::Continue {
-                value: "world".to_string(),
-                comment: Some("the comment".to_string()),
-            },
-            Card::End,
-        ];
-        let block = make_block(&cards);
-        let mut reader = BlockReader::new(block.as_bytes());
-        let (header, _) = Header::read_from_block_reader(&mut reader).unwrap();
-        assert_eq!(
-            header.get("LONGSTR"),
-            Some(&Card::Value {
-                keyword: "LONGSTR".to_string(),
-                value: CardValue::String("hello world".to_string()),
-                comment: Some("the comment".to_string()),
-            })
-        );
-    }
-
-    #[test]
-    fn test_multiple_continue_stitching() {
-        let cards = vec![
-            Card::Value {
-                keyword: "LONGSTR".to_string(),
-                value: CardValue::String("nothing &".to_string()),
-                comment: Some("youth".to_string()),
-            },
-            Card::Continue {
-                value: "is &".to_string(),
-                comment: Some("is".to_string()),
-            },
-            Card::Continue {
-                value: "permanent".to_string(),
-                comment: Some("fleeting".to_string()),
-            },
-            Card::End,
-        ];
-        let block = make_block(&cards);
-        let mut reader = BlockReader::new(block.as_bytes());
-        let (header, _) = Header::read_from_block_reader(&mut reader).unwrap();
-        assert_eq!(
-            header.get("LONGSTR"),
-            Some(&Card::Value {
-                keyword: "LONGSTR".to_string(),
-                value: CardValue::String("nothing is permanent".to_string()),
-                comment: Some("youth is fleeting".to_string()),
-            })
         );
     }
 
@@ -641,5 +568,55 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn write_to_writer_round_trip() {
+        let mut header = Header::new();
+        header.append(build_card("OBJECT", "Crab Nebula", None));
+        header.append(Card::End);
+
+        let mut buf = Vec::new();
+        let blocks = header.write_to_writer(&mut buf).unwrap();
+        assert_eq!(blocks, 1);
+        assert_eq!(buf.len(), 2880);
+
+        let mut reader = BlockReader::new(buf.as_slice());
+        let (roundtripped, _) = Header::read_from_block_reader(&mut reader).unwrap();
+        assert_eq!(roundtripped.get("OBJECT"), header.get("OBJECT"));
+    }
+
+    #[test]
+    fn write_to_writer_long_string_round_trip() {
+        // 200 'D's with a comment - the encoder produces a trailing CONTINUE to carry the comment.
+        let original = Card::Value {
+            keyword: "LONGKEY".to_string(),
+            value: CardValue::String("D".repeat(200)),
+            comment: Some("telescope comment".to_string()),
+        };
+        let mut header = Header::new();
+        header.append(original.clone());
+        header.append(Card::End);
+
+        let mut buf = Vec::new();
+        header.write_to_writer(&mut buf).unwrap();
+
+        let mut reader = BlockReader::new(buf.as_slice());
+        let (roundtripped, _) = Header::read_from_block_reader(&mut reader).unwrap();
+        assert_eq!(roundtripped.get("LONGKEY"), Some(&original));
+    }
+
+    #[test]
+    fn write_to_writer_appends_end() {
+        let mut header = Header::new();
+        header.append(build_card("SIMPLE", "T", None));
+        // no END card
+
+        let mut buf = Vec::new();
+        header.write_to_writer(&mut buf).unwrap();
+
+        let mut reader = BlockReader::new(buf.as_slice());
+        // missing end would error here
+        assert!(Header::read_from_block_reader(&mut reader).is_ok());
     }
 }

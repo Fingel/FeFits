@@ -1,8 +1,7 @@
 use std::fmt;
 
-use super::Card;
 use crate::{
-    card::CardValue,
+    card::{Card, CardValue, long_string::split_long_string},
     error::{Error, Result},
     extension::XtensionType,
 };
@@ -34,6 +33,19 @@ impl Card {
             Card::Xtension { x, comment } => encode_xtension(x, comment),
             Card::Continue { value, comment } => encode_continue(value, comment),
         }
+    }
+
+    /// Encodes into one or more 80-byte records. This is necessary to support CONTINUE cards
+    pub fn encode_records(&self) -> Result<Vec<[u8; 80]>> {
+        if let Card::Value {
+            keyword,
+            value: CardValue::String(s),
+            comment,
+        } = self
+        {
+            return split_long_string(keyword, s, comment);
+        }
+        Ok(vec![self.encode()?])
     }
 }
 

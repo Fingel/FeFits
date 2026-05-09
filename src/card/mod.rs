@@ -4,6 +4,7 @@ use crate::{
 };
 
 mod encode;
+pub(crate) mod long_string;
 
 struct RawCard([u8; 80]);
 

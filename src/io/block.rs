@@ -17,6 +17,10 @@ impl Block {
         Block([0; 2880])
     }
 
+    pub fn blank() -> Self {
+        Block([b' '; 2880])
+    }
+
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
@@ -66,6 +70,48 @@ impl<R: Read> BlockReader<R> {
         self.inner.read_exact(block.as_bytes_mut())?;
         self.blocks_read += 1;
         Ok(block)
+    }
+}
+
+pub struct BlockWriter<W: std::io::Write> {
+    inner: W,
+    buffer: Block,
+    slot: usize, // 0..36
+    pub blocks_written: u64,
+}
+
+impl<W: std::io::Write> BlockWriter<W> {
+    pub fn new(inner: W) -> Self {
+        Self {
+            inner,
+            buffer: Block::blank(),
+            slot: 0,
+            blocks_written: 0,
+        }
+    }
+
+    pub fn write_record(&mut self, record: &[u8; 80]) -> Result<(), Error> {
+        self.buffer.set_record(self.slot, record);
+        self.slot += 1;
+        if self.slot == 36 {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), Error> {
+        self.inner.write_all(self.buffer.as_bytes())?;
+        self.blocks_written += 1;
+        self.buffer = Block::blank();
+        self.slot = 0;
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> Result<u64, Error> {
+        if self.slot > 0 {
+            self.flush()?;
+        }
+        Ok(self.blocks_written)
     }
 }
 
