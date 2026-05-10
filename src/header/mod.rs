@@ -5,7 +5,7 @@ use crate::{
     card::{Card, CardValue, long_string::stitch_continue},
     error::{Error, Result},
     extension::XtensionType,
-    io::{BlockReader, BlockWriter},
+    io::{BlockReader, BlockWriter, padded_size},
 };
 
 #[derive(Debug, Default)]
@@ -169,6 +169,39 @@ impl Header {
                 reason: "must be a recognized extension type string",
             }),
         }
+    }
+
+    /// 4.4.1.2
+    /// Nbits = |BITPIX| × GCOUNT × (PCOUNT + NAXIS1 × NAXIS2 × · · · × NAXISm),
+    pub fn data_len(&self) -> Result<u64> {
+        // TODO: test
+        let naxis_count = self.naxis()?;
+        if naxis_count == 0 {
+            return Ok(0);
+        }
+        let naxis_product: u64 =
+            (1..=naxis_count).try_fold(1u64, |acc, n| self.naxisn(n).map(|v| acc * v))?;
+
+        let gcount = match self.get_value("GCOUNT") {
+            Some(v) => v.as_integer().ok_or_else(|| Error::InvalidKeywordValue {
+                keyword: "GCOUNT",
+                value: format!("{v:?}"),
+                reason: "must be an integer",
+            })? as u64, // FITS standard forbids negative GCOUNT/PCOUNT - as u64 is safe(ish)
+            None => 1,
+        };
+
+        let pcount = match self.get_value("PCOUNT") {
+            Some(v) => v.as_integer().ok_or_else(|| Error::InvalidKeywordValue {
+                keyword: "PCOUNT",
+                value: format!("{v:?}"),
+                reason: "must be an integer",
+            })? as u64,
+            None => 0,
+        };
+
+        let unpadded_size = self.bitpix()?.byte_width() as u64 * gcount * (pcount + naxis_product);
+        Ok(padded_size(unpadded_size))
     }
 
     fn update_indices(&mut self, from_idx: usize, increment: bool) {
