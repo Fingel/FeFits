@@ -120,14 +120,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn thirty_six_records() {
+    fn test_thirty_six_records() {
         let block = Block::zeroed();
         let records: Vec<&[u8; 80]> = block.records().collect();
         assert_eq!(records.len(), 36);
     }
 
     #[test]
-    fn read_block() {
+    fn test_read_block() {
         let data = [1u8; 2880 * 2];
         let mut reader = BlockReader::new(&data[..]);
 
@@ -141,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_read() {
+    fn test_incomplete_read() {
         let data = [0; 1000];
         let mut reader = BlockReader::new(&data[..]);
         let result = reader.read_block();
@@ -152,7 +152,34 @@ mod tests {
     }
 
     #[test]
-    fn alignment() {
+    fn test_write_block() {
+        let data = [1u8; 80];
+        let mut buf = Vec::new();
+        let mut writer = BlockWriter::new(&mut buf);
+        writer.write_record(&data).unwrap();
+        writer.finish().unwrap();
+        assert_eq!(data, &buf[..80]);
+        assert_eq!(buf.len(), 2880);
+        assert!(buf[80..].iter().all(|&b| b == b' '))
+    }
+
+    #[test]
+    fn test_write_auto_flush() {
+        let data = [[1u8; 80]; 36];
+        let mut buf = Vec::new();
+        let mut writer = BlockWriter::new(&mut buf);
+        for d in data {
+            writer.write_record(&d).unwrap();
+        }
+        assert_eq!(writer.blocks_written, 1);
+        writer.write_record(&[2u8; 80]).unwrap();
+        let blocks_written = writer.finish().unwrap();
+        assert_eq!(buf.len(), 5760);
+        assert_eq!(blocks_written, 2);
+    }
+
+    #[test]
+    fn test_alignment() {
         assert_eq!(blocks_needed(0), 0);
         assert_eq!(blocks_needed(1), 1);
         assert_eq!(blocks_needed(2880), 1);
