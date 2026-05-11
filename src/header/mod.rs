@@ -79,14 +79,18 @@ impl Header {
 
     pub fn read_from_block_reader<R: Read>(reader: &mut BlockReader<R>) -> Result<(Header, u64)> {
         let mut header = Header::new();
-        let blocks_before = reader.blocks_read;
+        let mut blocks_read = 0u64;
         loop {
-            let block = reader.read_block().map_err(|e| match e {
-                Error::Io(io) if io.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    Error::InvalidHeader("missing END card before EOF".into())
+            let block = match reader.read_block()? {
+                Some(b) => b,
+                None if blocks_read == 0 => {
+                    return Err(Error::Io(std::io::Error::from(
+                        std::io::ErrorKind::UnexpectedEof,
+                    )));
                 }
-                other => other,
-            })?;
+                None => return Err(Error::InvalidHeader("missing END card before EOF".into())),
+            };
+            blocks_read += 1;
             for record in block.records() {
                 let card = Card::try_from(record)?;
                 let is_end = card == Card::End;
@@ -94,8 +98,7 @@ impl Header {
                     header.append(card);
                 }
                 if is_end {
-                    let blocks_consumed = reader.blocks_read - blocks_before;
-                    return Ok((header, blocks_consumed));
+                    return Ok((header, blocks_read));
                 }
             }
         }
@@ -340,10 +343,7 @@ mod tests {
         let card_bytes = cards.len() * 80;
         let mut reader = BlockReader::new(&block.as_bytes()[..card_bytes]);
         let result = Header::read_from_block_reader(&mut reader);
-        assert!(result.is_err());
-        assert!(
-            matches!(result, Err(Error::InvalidHeader(msg)) if msg.contains("missing END card"))
-        );
+        assert!(matches!(result, Err(Error::InvalidBlock(_))));
     }
 
     #[test]
@@ -651,5 +651,54 @@ mod tests {
         let mut reader = BlockReader::new(buf.as_slice());
         // missing end would error here
         assert!(Header::read_from_block_reader(&mut reader).is_ok());
+    }
+
+    fn int_card(keyword: &str, value: i64) -> Card {
+        Card::Value {
+            keyword: keyword.to_string(),
+            value: CardValue::Integer(value),
+            comment: None,
+        }
+    }
+
+    #[test]
+    fn test_data_len_naxis_zero() {
+        let mut h = Header::new();
+        h.append(int_card("NAXIS", 0));
+        assert_eq!(h.data_len().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_data_len_2d_image() {
+        let mut h = Header::new();
+        h.append(int_card("NAXIS", 2));
+        // unpadded = 16/8 * 100 * 50 = 10000, padded = 4 * 2880 = 11520
+        h.append(int_card("BITPIX", 16));
+        h.append(int_card("NAXIS1", 100));
+        h.append(int_card("NAXIS2", 50));
+        assert_eq!(h.data_len().unwrap(), 11520);
+    }
+
+    #[test]
+    fn test_data_len_with_pcount() {
+        let mut h = Header::new();
+        h.append(int_card("NAXIS", 2));
+        // unpadded = 8/8 * 1 * (200 + 100*50) = 5200, padded = 2 * 2880 = 5760
+        h.append(int_card("BITPIX", 8));
+        h.append(int_card("GCOUNT", 1));
+        h.append(int_card("PCOUNT", 200));
+        h.append(int_card("NAXIS1", 100));
+        h.append(int_card("NAXIS2", 50));
+        assert_eq!(h.data_len().unwrap(), 5760);
+    }
+
+    #[test]
+    fn test_data_len_exactly_one_block() {
+        let mut h = Header::new();
+        // unpadded = |-32|/8 * 720 = 2880, padded = 2880 (exactly one block)
+        h.append(int_card("BITPIX", -32));
+        h.append(int_card("NAXIS", 1));
+        h.append(int_card("NAXIS1", 720));
+        assert_eq!(h.data_len().unwrap(), 2880);
     }
 }

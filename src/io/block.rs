@@ -65,11 +65,26 @@ impl<R: Read> BlockReader<R> {
         }
     }
 
-    pub fn read_block(&mut self) -> Result<Block, Error> {
+    pub fn read_block(&mut self) -> Result<Option<Block>, Error> {
         let mut block = Block::zeroed();
-        self.inner.read_exact(block.as_bytes_mut())?;
+        // Read one byte first: read() returning 0 bytes read is the only reliable signal
+        // for clean EOF.
+        if self.inner.read(&mut block.as_bytes_mut()[..1])? == 0 {
+            return Ok(None);
+        }
+        // First byte arrived so read the rest. UnexpectedEof here means a
+        // truncated block, not a clean boundary.
+        self.inner
+            .read_exact(&mut block.as_bytes_mut()[1..])
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                    Error::InvalidBlock("truncated block: EOF mid-read".into())
+                } else {
+                    Error::Io(e)
+                }
+            })?;
         self.blocks_read += 1;
-        Ok(block)
+        Ok(Some(block))
     }
 }
 
@@ -131,24 +146,29 @@ mod tests {
         let data = [1u8; 2880 * 2];
         let mut reader = BlockReader::new(&data[..]);
 
-        let block = reader.read_block().unwrap();
+        let block = reader.read_block().unwrap().unwrap();
         assert_eq!(block.as_bytes(), &data[..2880]);
         assert_eq!(reader.blocks_read, 1);
 
-        let block = reader.read_block().unwrap();
+        let block = reader.read_block().unwrap().unwrap();
         assert_eq!(block.as_bytes(), &data[2880..]);
         assert_eq!(reader.blocks_read, 2);
     }
 
     #[test]
     fn test_incomplete_read() {
-        let data = [0; 1000];
+        let data = [1u8; 1000];
         let mut reader = BlockReader::new(&data[..]);
-        let result = reader.read_block();
-        assert!(matches!(
-            result,
-            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof
-        ));
+        assert!(matches!(reader.read_block(), Err(Error::InvalidBlock(_))));
+    }
+
+    #[test]
+    fn test_clean_eof() {
+        let data = [1u8; 2880];
+        let mut reader = BlockReader::new(&data[..]);
+        reader.read_block().unwrap().unwrap(); // first block
+        let result = reader.read_block(); // No second block
+        assert!(matches!(result, Ok(None)));
     }
 
     #[test]
