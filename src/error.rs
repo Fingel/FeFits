@@ -22,6 +22,8 @@ pub enum Error {
     InvalidHDU(String), // TODO split into structured variants: UnknownXtension type
     #[error("Unsupported Feature: {0}")]
     UnsupportedFeature(String),
+    #[error("HDU index {0} not found")]
+    HduNotFound(usize),
     #[error("Checksum Mismatch: expected {expected}, got {actual}")]
     ChecksumMismatch { expected: u32, actual: u32 },
     #[error("Type mismatch: {0}")]

@@ -26,6 +26,7 @@ impl From<XtensionType> for HduKind {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct HduEntry {
+    pub index: usize,
     pub header_offset: u64,
     pub data_offset: u64,
     pub data_len: u64,
@@ -69,6 +70,10 @@ impl<R: Read + Seek> Fits<R> {
     }
 
     pub fn hdu_by_name(&self, name: &str) -> Option<&HduEntry> {
+        if name.eq_ignore_ascii_case("PRIMARY") {
+            // support looking up "PRIMARY" by name, even though technically it's not named
+            return self.index.first().filter(|e| e.kind == HduKind::Primary);
+        }
         self.index
             .iter()
             .find(|hdu| hdu.name.as_deref() == Some(name))
@@ -78,8 +83,13 @@ impl<R: Read + Seek> Fits<R> {
         self.index.iter()
     }
 
-    pub fn read_header(&mut self, entry: &HduEntry) -> Result<Header> {
-        self.reader.seek(SeekFrom::Start(entry.header_offset))?;
+    pub fn read_header(&mut self, n: usize) -> Result<Header> {
+        let offset = self
+            .index
+            .get(n)
+            .ok_or(crate::error::Error::HduNotFound(n))?
+            .header_offset;
+        self.reader.seek(SeekFrom::Start(offset))?;
         let mut block_reader = BlockReader::new(&mut self.reader);
         let (header, _) = Header::read_from_block_reader(&mut block_reader)?;
         Ok(header)
@@ -116,6 +126,7 @@ impl<R: Read + Seek> Fits<R> {
             .and_then(|v| v.as_integer());
 
         self.index.push(HduEntry {
+            index: self.index.len(),
             header_offset: offset,
             data_offset,
             data_len,
@@ -204,6 +215,7 @@ mod tests {
         let entry = fits.hdu(0).unwrap();
         assert_eq!(entry.kind, HduKind::Primary);
         assert_eq!(entry.header_offset, 0);
+        assert_eq!(entry.index, 0);
         assert_eq!(entry.data_offset, 2880);
         assert_eq!(entry.data_len, 0);
         assert_eq!(entry.name, None);
@@ -227,8 +239,10 @@ mod tests {
         assert_eq!(fits.len(), 2);
         assert_eq!(fits.hdu(0).unwrap().kind, HduKind::Primary);
         assert_eq!(fits.hdu(0).unwrap().data_len, 2880);
+        assert_eq!(fits.hdu(0).unwrap().index, 0);
         assert_eq!(fits.hdu(1).unwrap().kind, HduKind::Image);
         assert_eq!(fits.hdu(1).unwrap().header_offset, 2 * 2880);
+        assert_eq!(fits.hdu(1).unwrap().index, 1);
     }
 
     #[test]
@@ -270,5 +284,45 @@ mod tests {
 
         assert_eq!(fits.hdu(1).unwrap().name, Some("SCI".into()));
         assert_eq!(fits.hdu(1).unwrap().version, Some(2));
+        assert_eq!(fits.hdu_by_name("SCI").unwrap().index, 1);
+    }
+
+    #[test]
+    fn test_iter_hdus() {
+        let mut buf = write_hdu(&make_primary_header(&[]));
+        buf.extend(write_hdu(&make_image_extension(&[])));
+
+        let fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        let kinds: Vec<&HduKind> = fits.iter_hdus().map(|e| &e.kind).collect();
+        assert_eq!(kinds, vec![&HduKind::Primary, &HduKind::Image]);
+    }
+
+    #[test]
+    fn test_read_header() {
+        let buf = write_hdu(&make_primary_header(&[100, 50]));
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        let header = fits.read_header(0).unwrap();
+        assert_eq!(header.naxis().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_read_header_not_found() {
+        let buf = write_hdu(&make_primary_header(&[100, 50]));
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        let result = fits.read_header(99);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::error::Error::HduNotFound(99)
+        ));
+    }
+
+    #[test]
+    fn test_read_header_by_name() {
+        let buf = write_hdu(&make_primary_header(&[100, 50]));
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        let hdu = fits.hdu_by_name("PRIMARY").unwrap();
+        let header = fits.read_header(hdu.index).unwrap();
+        assert_eq!(header.naxis().unwrap(), 2);
     }
 }
