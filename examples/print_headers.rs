@@ -7,12 +7,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("Usage: print_headers <fits_file>");
 
     let mut fits = Fits::open(&path)?;
-    if !fits.is_empty() {
-        let header = fits.read_header(0)?;
-        println!("File: {path}");
-        println!("Header: {} cards", header.len());
+    println!("File: {path}");
+    println!("{} HDUs", &fits.len());
+    for i in 0..fits.len() {
+        let header = fits.read_header(i).unwrap_or_default();
+        println!("HDU {}: {} cards", i, header.len());
         println!("{}", "─".repeat(80));
-
         for card in header.cards() {
             println!("{card}");
         }
