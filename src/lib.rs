@@ -5,5 +5,6 @@ pub mod extension;
 pub mod fits;
 pub mod header;
 pub mod io;
+pub mod pixel;
 
 pub use bitpix::Bitpix;
