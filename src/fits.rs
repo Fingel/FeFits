@@ -69,14 +69,15 @@ impl<R: Read + Seek> Fits<R> {
         self.index.get(n)
     }
 
-    pub fn hdu_by_name(&self, name: &str) -> Option<&HduEntry> {
+    pub fn hdu_by_name(&self, name: &str, version: Option<i64>) -> Option<&HduEntry> {
         if name.eq_ignore_ascii_case("PRIMARY") {
             // support looking up "PRIMARY" by name, even though technically it's not named
             return self.index.first().filter(|e| e.kind == HduKind::Primary);
         }
-        self.index
-            .iter()
-            .find(|hdu| hdu.name.as_deref() == Some(name))
+        let target_version = version.unwrap_or(1);
+        self.index.iter().find(|hdu| {
+            hdu.name.as_deref() == Some(name) && hdu.version.unwrap_or(1) == target_version
+        })
     }
 
     pub fn iter_hdus(&self) -> impl Iterator<Item = &HduEntry> {
@@ -284,7 +285,36 @@ mod tests {
 
         assert_eq!(fits.hdu(1).unwrap().name, Some("SCI".into()));
         assert_eq!(fits.hdu(1).unwrap().version, Some(2));
-        assert_eq!(fits.hdu_by_name("SCI").unwrap().index, 1);
+        assert_eq!(fits.hdu_by_name("SCI", Some(2)).unwrap().index, 1);
+        assert!(fits.hdu_by_name("SCI", Some(1)).is_none()); // wrong version
+    }
+
+    #[test]
+    fn test_hdu_by_name_version_default() {
+        // Extension with no EXTVER keyword implicitly has version 1.
+        let mut ext = Header::new();
+        ext.append(Card::Xtension {
+            x: XtensionType::Image,
+            comment: None,
+        });
+        ext.append(int_card("BITPIX", 8));
+        ext.append(int_card("NAXIS", 0));
+        ext.append(int_card("PCOUNT", 0));
+        ext.append(int_card("GCOUNT", 1));
+        ext.append(Card::Value {
+            keyword: "EXTNAME".into(),
+            value: CardValue::String("SCI".into()),
+            comment: None,
+        });
+        ext.append(Card::End);
+
+        let mut buf = write_hdu(&make_primary_header(&[]));
+        buf.extend(write_hdu(&ext));
+
+        let fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        assert!(fits.hdu_by_name("SCI", None).is_some());
+        assert!(fits.hdu_by_name("SCI", Some(1)).is_some());
+        assert!(fits.hdu_by_name("SCI", Some(2)).is_none());
     }
 
     #[test]
@@ -321,7 +351,7 @@ mod tests {
     fn test_read_header_by_name() {
         let buf = write_hdu(&make_primary_header(&[100, 50]));
         let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
-        let hdu = fits.hdu_by_name("PRIMARY").unwrap();
+        let hdu = fits.hdu_by_name("PRIMARY", None).unwrap();
         let header = fits.read_header(hdu.index).unwrap();
         assert_eq!(header.naxis().unwrap(), 2);
     }
