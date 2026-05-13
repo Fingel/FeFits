@@ -4,7 +4,14 @@ use std::{
     path::Path,
 };
 
-use crate::{error::Result, extension::XtensionType, header::Header, io::BlockReader};
+use crate::{
+    Bitpix,
+    error::{Error, Result},
+    extension::XtensionType,
+    header::Header,
+    io::BlockReader,
+    pixel::Pixel,
+};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum HduKind {
@@ -33,6 +40,15 @@ pub struct HduEntry {
     pub kind: HduKind,
     pub name: Option<String>,
     pub version: Option<i64>,
+}
+
+pub enum ImageData {
+    U8(Vec<u8>),
+    I16(Vec<i16>),
+    I32(Vec<i32>),
+    I64(Vec<i64>),
+    F32(Vec<f32>),
+    F64(Vec<f64>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -94,6 +110,60 @@ impl<R: Read + Seek> Fits<R> {
         let mut block_reader = BlockReader::new(&mut self.reader);
         let (header, _) = Header::read_from_block_reader(&mut block_reader)?;
         Ok(header)
+    }
+
+    /// Read an image as a vector of pixels of type `T` directly. If you already
+    /// know the pixel type of the image, this will return a vector of that type directly.
+    /// Otherwise, use read_image and match on the ImageData variant to determine the pixel type.
+    pub fn read_image_as<T: Pixel>(&mut self, n: usize) -> Result<Vec<T>> {
+        let entry = self.index.get(n).ok_or(Error::HduNotFound(n))?;
+        match entry.kind {
+            HduKind::Primary | HduKind::Image => {}
+            ref k => return Err(Error::InvalidHDU(format!("HDU {n} is {k:?}, not an image"))),
+        }
+        let data_offset = entry.data_offset;
+
+        let header = self.read_header(n)?;
+        let actual = header.bitpix()?;
+        if actual != T::BITPIX {
+            return Err(Error::TypeMismatch(format!(
+                "header has {actual:?}, caller requested {:?}",
+                T::BITPIX
+            )));
+        }
+
+        let naxis = header.naxis()?;
+        let pixel_count: u64 = if naxis == 0 {
+            0
+        } else {
+            (1..=naxis).try_fold(1u64, |acc, n| header.naxisn(n).map(|v| acc * v))?
+        };
+
+        if pixel_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        let unpadded_bytes = pixel_count * T::BITPIX.byte_width() as u64;
+        self.reader.seek(SeekFrom::Start(data_offset))?;
+        let mut raw = vec![0u8; unpadded_bytes as usize];
+        self.reader.read_exact(&mut raw)?;
+
+        Ok(raw
+            .chunks_exact(T::BITPIX.byte_width())
+            .map(T::from_be_bytes)
+            .collect())
+    }
+
+    pub fn read_image(&mut self, n: usize) -> Result<ImageData> {
+        let bitpix = self.read_header(n)?.bitpix()?;
+        match bitpix {
+            Bitpix::UnsignedByte => self.read_image_as::<u8>(n).map(ImageData::U8),
+            Bitpix::SignedShort => self.read_image_as::<i16>(n).map(ImageData::I16),
+            Bitpix::SignedInt => self.read_image_as::<i32>(n).map(ImageData::I32),
+            Bitpix::SignedLong => self.read_image_as::<i64>(n).map(ImageData::I64),
+            Bitpix::Float => self.read_image_as::<f32>(n).map(ImageData::F32),
+            Bitpix::Double => self.read_image_as::<f64>(n).map(ImageData::F64),
+        }
     }
 
     fn scan_one(&mut self, offset: u64) -> Result<Option<u64>> {
@@ -164,6 +234,33 @@ mod tests {
             value: CardValue::Integer(value),
             comment: None,
         }
+    }
+
+    fn make_primary_header_bitpix(bitpix: i64, axes: &[i64]) -> Header {
+        let mut h = Header::new();
+        h.append(Card::Value {
+            keyword: "SIMPLE".into(),
+            value: CardValue::Logical(true),
+            comment: None,
+        });
+        h.append(int_card("BITPIX", bitpix));
+        h.append(int_card("NAXIS", axes.len() as i64));
+        for (i, &n) in axes.iter().enumerate() {
+            h.append(int_card(&format!("NAXIS{}", i + 1), n));
+        }
+        h.append(Card::End);
+        h
+    }
+
+    fn write_hdu_with_data(header: &Header, data: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        header.write_to_writer(&mut buf).unwrap();
+        buf.extend_from_slice(data);
+        buf.extend(std::iter::repeat_n(
+            0u8,
+            crate::io::padding_bytes(data.len() as u64) as usize,
+        ));
+        buf
     }
 
     fn make_primary_header(axes: &[i64]) -> Header {
@@ -354,5 +451,52 @@ mod tests {
         let hdu = fits.hdu_by_name("PRIMARY", None).unwrap();
         let header = fits.read_header(hdu.index).unwrap();
         assert_eq!(header.naxis().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_read_image_as_u8() {
+        let header = make_primary_header_bitpix(8, &[3]);
+        let buf = write_hdu_with_data(&header, &[1u8, 2, 3]);
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        assert_eq!(fits.read_image_as::<u8>(0).unwrap(), vec![1u8, 2, 3]);
+    }
+
+    #[test]
+    fn test_read_image_as_i16_byte_swap() {
+        let header = make_primary_header_bitpix(16, &[2]);
+        // 1i16 big-endian = 0x00, 0x01, -1i16 big-endian = 0xFF, 0xFF
+        let buf = write_hdu_with_data(&header, &[0x00u8, 0x01, 0xFF, 0xFF]);
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        assert_eq!(fits.read_image_as::<i16>(0).unwrap(), vec![1i16, -1i16]);
+    }
+
+    #[test]
+    fn test_read_image_as_wrong_type() {
+        let header = make_primary_header_bitpix(16, &[2]);
+        let buf = write_hdu_with_data(&header, &[0u8; 4]);
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        assert!(matches!(
+            fits.read_image_as::<u8>(0).unwrap_err(),
+            crate::error::Error::TypeMismatch(_)
+        ));
+    }
+
+    #[test]
+    fn test_read_image_as_no_data() {
+        let buf = write_hdu(&make_primary_header(&[]));
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        assert!(fits.read_image_as::<u8>(0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_read_image_dispatch() {
+        let header = make_primary_header_bitpix(16, &[2]);
+        let buf = write_hdu_with_data(&header, &[0x00u8, 0x01, 0x00, 0x02]);
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        let image = fits.read_image(0).unwrap();
+        match image {
+            ImageData::I16(pixels) => assert_eq!(pixels, vec![1i16, 2i16]),
+            _ => panic!("expected ImageData::I16"),
+        }
     }
 }
