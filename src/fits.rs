@@ -236,7 +236,7 @@ mod tests {
         }
     }
 
-    fn make_primary_header_bitpix(bitpix: i64, axes: &[i64]) -> Header {
+    fn make_primary_header(bitpix: i64, axes: &[i64]) -> Header {
         let mut h = Header::new();
         h.append(Card::Value {
             keyword: "SIMPLE".into(),
@@ -252,40 +252,13 @@ mod tests {
         h
     }
 
-    fn write_hdu_with_data(header: &Header, data: &[u8]) -> Vec<u8> {
-        let mut buf = Vec::new();
-        header.write_to_writer(&mut buf).unwrap();
-        buf.extend_from_slice(data);
-        buf.extend(std::iter::repeat_n(
-            0u8,
-            crate::io::padding_bytes(data.len() as u64) as usize,
-        ));
-        buf
-    }
-
-    fn make_primary_header(axes: &[i64]) -> Header {
-        let mut h = Header::new();
-        h.append(Card::Value {
-            keyword: "SIMPLE".into(),
-            value: CardValue::Logical(true),
-            comment: None,
-        });
-        h.append(int_card("BITPIX", 8));
-        h.append(int_card("NAXIS", axes.len() as i64));
-        for (i, &n) in axes.iter().enumerate() {
-            h.append(int_card(&format!("NAXIS{}", i + 1), n));
-        }
-        h.append(Card::End);
-        h
-    }
-
-    fn make_image_extension(axes: &[i64]) -> Header {
+    fn make_image_extension(bitpix: i64, axes: &[i64]) -> Header {
         let mut h = Header::new();
         h.append(Card::Xtension {
             x: XtensionType::Image,
             comment: None,
         });
-        h.append(int_card("BITPIX", 8));
+        h.append(int_card("BITPIX", bitpix));
         h.append(int_card("NAXIS", axes.len() as i64));
         for (i, &n) in axes.iter().enumerate() {
             h.append(int_card(&format!("NAXIS{}", i + 1), n));
@@ -296,17 +269,24 @@ mod tests {
         h
     }
 
-    fn write_hdu(header: &Header) -> Vec<u8> {
+    fn write_hdu(header: &Header, data: &[u8]) -> Vec<u8> {
         let mut buf = Vec::new();
         header.write_to_writer(&mut buf).unwrap();
-        let data_len = header.data_len().unwrap() as usize;
-        buf.extend(std::iter::repeat_n(0u8, data_len));
+        buf.extend_from_slice(data);
+        buf.extend(std::iter::repeat_n(
+            0u8,
+            if data.is_empty() {
+                header.data_len().unwrap() as usize
+            } else {
+                crate::io::padding_bytes(data.len() as u64) as usize
+            },
+        ));
         buf
     }
 
     #[test]
     fn test_primary_no_data() {
-        let buf = write_hdu(&make_primary_header(&[]));
+        let buf = write_hdu(&make_primary_header(8, &[]), &[]);
         let fits = Fits::from_reader(Cursor::new(buf)).unwrap();
 
         assert_eq!(fits.len(), 1);
@@ -329,8 +309,8 @@ mod tests {
     fn test_two_hdus() {
         // BITPIX=8, NAXIS1=100 = 100 bytes = 1 data block (2880 padded)
         // second HDU header starts at 1 header block + 1 data block = 2 * 2880
-        let mut buf = write_hdu(&make_primary_header(&[100]));
-        buf.extend(write_hdu(&make_image_extension(&[])));
+        let mut buf = write_hdu(&make_primary_header(8, &[100]), &[]);
+        buf.extend(write_hdu(&make_image_extension(8, &[]), &[]));
 
         let fits = Fits::from_reader(Cursor::new(buf)).unwrap();
 
@@ -347,8 +327,8 @@ mod tests {
     fn test_2d_primary_with_extension() {
         // BITPIX=8, NAXIS1=100, NAXIS2=50 = 5000 unpadded bytes = 2 data blocks (5760 padded)
         // second HDU header starts at 1 header block + 2 data blocks = 3 * 2880
-        let mut buf = write_hdu(&make_primary_header(&[100, 50]));
-        buf.extend(write_hdu(&make_image_extension(&[])));
+        let mut buf = write_hdu(&make_primary_header(8, &[100, 50]), &[]);
+        buf.extend(write_hdu(&make_image_extension(8, &[]), &[]));
 
         let fits = Fits::from_reader(Cursor::new(buf)).unwrap();
 
@@ -375,8 +355,8 @@ mod tests {
         ext.append(int_card("EXTVER", 2));
         ext.append(Card::End);
 
-        let mut buf = write_hdu(&make_primary_header(&[]));
-        buf.extend(write_hdu(&ext));
+        let mut buf = write_hdu(&make_primary_header(8, &[]), &[]);
+        buf.extend(write_hdu(&ext, &[]));
 
         let fits = Fits::from_reader(Cursor::new(buf)).unwrap();
 
@@ -405,8 +385,8 @@ mod tests {
         });
         ext.append(Card::End);
 
-        let mut buf = write_hdu(&make_primary_header(&[]));
-        buf.extend(write_hdu(&ext));
+        let mut buf = write_hdu(&make_primary_header(8, &[]), &[]);
+        buf.extend(write_hdu(&ext, &[]));
 
         let fits = Fits::from_reader(Cursor::new(buf)).unwrap();
         assert!(fits.hdu_by_name("SCI", None).is_some());
@@ -416,8 +396,8 @@ mod tests {
 
     #[test]
     fn test_iter_hdus() {
-        let mut buf = write_hdu(&make_primary_header(&[]));
-        buf.extend(write_hdu(&make_image_extension(&[])));
+        let mut buf = write_hdu(&make_primary_header(8, &[]), &[]);
+        buf.extend(write_hdu(&make_image_extension(8, &[]), &[]));
 
         let fits = Fits::from_reader(Cursor::new(buf)).unwrap();
         let kinds: Vec<&HduKind> = fits.iter_hdus().map(|e| &e.kind).collect();
@@ -426,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_read_header() {
-        let buf = write_hdu(&make_primary_header(&[100, 50]));
+        let buf = write_hdu(&make_primary_header(8, &[100, 50]), &[]);
         let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
         let header = fits.read_header(0).unwrap();
         assert_eq!(header.naxis().unwrap(), 2);
@@ -434,7 +414,7 @@ mod tests {
 
     #[test]
     fn test_read_header_not_found() {
-        let buf = write_hdu(&make_primary_header(&[100, 50]));
+        let buf = write_hdu(&make_primary_header(8, &[100, 50]), &[]);
         let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
         let result = fits.read_header(99);
         assert!(result.is_err());
@@ -446,7 +426,7 @@ mod tests {
 
     #[test]
     fn test_read_header_by_name() {
-        let buf = write_hdu(&make_primary_header(&[100, 50]));
+        let buf = write_hdu(&make_primary_header(8, &[100, 50]), &[]);
         let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
         let hdu = fits.hdu_by_name("PRIMARY", None).unwrap();
         let header = fits.read_header(hdu.index).unwrap();
@@ -455,25 +435,25 @@ mod tests {
 
     #[test]
     fn test_read_image_as_u8() {
-        let header = make_primary_header_bitpix(8, &[3]);
-        let buf = write_hdu_with_data(&header, &[1u8, 2, 3]);
+        let header = make_primary_header(8, &[3]);
+        let buf = write_hdu(&header, &[1u8, 2, 3]);
         let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
         assert_eq!(fits.read_image_as::<u8>(0).unwrap(), vec![1u8, 2, 3]);
     }
 
     #[test]
     fn test_read_image_as_i16_byte_swap() {
-        let header = make_primary_header_bitpix(16, &[2]);
+        let header = make_primary_header(16, &[2]);
         // 1i16 big-endian = 0x00, 0x01, -1i16 big-endian = 0xFF, 0xFF
-        let buf = write_hdu_with_data(&header, &[0x00u8, 0x01, 0xFF, 0xFF]);
+        let buf = write_hdu(&header, &[0x00u8, 0x01, 0xFF, 0xFF]);
         let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
         assert_eq!(fits.read_image_as::<i16>(0).unwrap(), vec![1i16, -1i16]);
     }
 
     #[test]
     fn test_read_image_as_wrong_type() {
-        let header = make_primary_header_bitpix(16, &[2]);
-        let buf = write_hdu_with_data(&header, &[0u8; 4]);
+        let header = make_primary_header(16, &[2]);
+        let buf = write_hdu(&header, &[0u8; 4]);
         let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
         assert!(matches!(
             fits.read_image_as::<u8>(0).unwrap_err(),
@@ -483,15 +463,15 @@ mod tests {
 
     #[test]
     fn test_read_image_as_no_data() {
-        let buf = write_hdu(&make_primary_header(&[]));
+        let buf = write_hdu(&make_primary_header(8, &[]), &[]);
         let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
         assert!(fits.read_image_as::<u8>(0).unwrap().is_empty());
     }
 
     #[test]
     fn test_read_image_dispatch() {
-        let header = make_primary_header_bitpix(16, &[2]);
-        let buf = write_hdu_with_data(&header, &[0x00u8, 0x01, 0x00, 0x02]);
+        let header = make_primary_header(16, &[2]);
+        let buf = write_hdu(&header, &[0x00u8, 0x01, 0x00, 0x02]);
         let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
         let image = fits.read_image(0).unwrap();
         match image {
