@@ -174,6 +174,34 @@ impl Header {
         }
     }
 
+    // 4.4.2.5 Keywords that describe arrays.
+
+    pub fn bscale(&self) -> Result<f64> {
+        match self.get_value("BSCALE") {
+            None => Ok(1.0),
+            Some(CardValue::Float(f)) => Ok(*f),
+            Some(CardValue::Integer(i)) => Ok(*i as f64),
+            Some(v) => Err(Error::InvalidKeywordValue {
+                keyword: "BSCALE",
+                value: format!("{v:?}"),
+                reason: "must be numeric",
+            }),
+        }
+    }
+
+    pub fn bzero(&self) -> Result<f64> {
+        match self.get_value("BZERO") {
+            None => Ok(0.0),
+            Some(CardValue::Float(f)) => Ok(*f),
+            Some(CardValue::Integer(i)) => Ok(*i as f64),
+            Some(v) => Err(Error::InvalidKeywordValue {
+                keyword: "BZERO",
+                value: format!("{v:?}"),
+                reason: "must be numeric",
+            }),
+        }
+    }
+
     /// 4.4.1.2
     /// Nbits = |BITPIX| × GCOUNT × (PCOUNT + NAXIS1 × NAXIS2 × · · · × NAXISm),
     pub fn data_len(&self) -> Result<u64> {

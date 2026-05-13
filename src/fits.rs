@@ -42,13 +42,54 @@ pub struct HduEntry {
     pub version: Option<i64>,
 }
 
+/// See 4.4.2.5 Table 11 For the conversion conventions for signed to unsigned int values
 pub enum ImageData {
-    U8(Vec<u8>),
-    I16(Vec<i16>),
-    I32(Vec<i32>),
-    I64(Vec<i64>),
-    F32(Vec<f32>),
-    F64(Vec<f64>),
+    I8(Vec<i8>),   // BITPIX=8, BZERO=-128 (u8 stored, i8 physical)
+    U8(Vec<u8>),   // BITPIX=8, no scaling
+    I16(Vec<i16>), // BITPIX=16, no scaling
+    U16(Vec<u16>), // BITPIX=16, BZERO=32768 (i16 stored, u16 physical)
+    I32(Vec<i32>), // BITPIX=32, no scaling
+    U32(Vec<u32>), // BITPIX=32, BZERO=2147483648 (i32 stored, u32 physical)
+    I64(Vec<i64>), // BITPIX=64, no scaling
+    U64(Vec<u64>), // BITPIX=64, BZERO=9223372036854775808 (i64 stored, u64 physical)
+    F32(Vec<f32>), // BITPIX=-32, no scaling
+    F64(Vec<f64>), // BITPIX=-64, no scaling OR any type with non-identity BSCALE/BZERO
+}
+
+impl ImageData {
+    pub fn len(&self) -> usize {
+        match self {
+            ImageData::I8(v) => v.len(),
+            ImageData::U8(v) => v.len(),
+            ImageData::I16(v) => v.len(),
+            ImageData::U16(v) => v.len(),
+            ImageData::I32(v) => v.len(),
+            ImageData::U32(v) => v.len(),
+            ImageData::I64(v) => v.len(),
+            ImageData::U64(v) => v.len(),
+            ImageData::F32(v) => v.len(),
+            ImageData::F64(v) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn into_f64(self) -> Vec<f64> {
+        match self {
+            ImageData::I8(v) => v.into_iter().map(|x| x as f64).collect(),
+            ImageData::U8(v) => v.into_iter().map(|x| x as f64).collect(),
+            ImageData::I16(v) => v.into_iter().map(|x| x as f64).collect(),
+            ImageData::U16(v) => v.into_iter().map(|x| x as f64).collect(),
+            ImageData::I32(v) => v.into_iter().map(|x| x as f64).collect(),
+            ImageData::U32(v) => v.into_iter().map(|x| x as f64).collect(),
+            ImageData::I64(v) => v.into_iter().map(|x| x as f64).collect(),
+            ImageData::U64(v) => v.into_iter().map(|x| x as f64).collect(),
+            ImageData::F32(v) => v.into_iter().map(|x| x as f64).collect(),
+            ImageData::F64(v) => v,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -154,8 +195,7 @@ impl<R: Read + Seek> Fits<R> {
             .collect())
     }
 
-    pub fn read_image(&mut self, n: usize) -> Result<ImageData> {
-        let bitpix = self.read_header(n)?.bitpix()?;
+    fn read_image_native(&mut self, n: usize, bitpix: Bitpix) -> Result<ImageData> {
         match bitpix {
             Bitpix::UnsignedByte => self.read_image_as::<u8>(n).map(ImageData::U8),
             Bitpix::SignedShort => self.read_image_as::<i16>(n).map(ImageData::I16),
@@ -164,6 +204,87 @@ impl<R: Read + Seek> Fits<R> {
             Bitpix::Float => self.read_image_as::<f32>(n).map(ImageData::F32),
             Bitpix::Double => self.read_image_as::<f64>(n).map(ImageData::F64),
         }
+    }
+
+    pub fn read_image_raw(&mut self, n: usize) -> Result<ImageData> {
+        let bitpix = self.read_header(n)?.bitpix()?;
+        self.read_image_native(n, bitpix)
+    }
+
+    pub fn read_image(&mut self, n: usize) -> Result<ImageData> {
+        let header = self.read_header(n)?;
+        let bitpix = header.bitpix()?;
+        let bscale = header.bscale()?;
+        let bzero = header.bzero()?;
+
+        // No scaling needed
+        if bscale == 1.0 && bzero == 0.0 {
+            return self.read_image_native(n, bitpix);
+        }
+
+        // 4.4.2.5 Table 11: Unsigned integer convention, BSCALE must be 1.0
+        // MSB/sign bit flip from footnote 9
+        if bscale == 1.0 {
+            if bitpix == Bitpix::UnsignedByte && bzero == -128.0 {
+                let raw = self.read_image_as::<u8>(n)?;
+                return Ok(ImageData::I8(
+                    raw.into_iter().map(|v| (v ^ (1u8 << 7)) as i8).collect(),
+                ));
+            }
+            if bitpix == Bitpix::SignedShort && bzero == 32768.0 {
+                let raw = self.read_image_as::<i16>(n)?;
+                return Ok(ImageData::U16(
+                    raw.into_iter().map(|v| (v as u16) ^ (1u16 << 15)).collect(),
+                ));
+            }
+            if bitpix == Bitpix::SignedInt && bzero == 2147483648.0 {
+                let raw = self.read_image_as::<i32>(n)?;
+                return Ok(ImageData::U32(
+                    raw.into_iter().map(|v| (v as u32) ^ (1u32 << 31)).collect(),
+                ));
+            }
+            if bitpix == Bitpix::SignedLong && bzero == 9223372036854775808.0 {
+                let raw = self.read_image_as::<i64>(n)?;
+                return Ok(ImageData::U64(
+                    raw.into_iter().map(|v| (v as u64) ^ (1u64 << 63)).collect(),
+                ));
+            }
+        }
+
+        // Arbitrary BSCALE/BZERO scaling
+        let pixels: Vec<f64> = match bitpix {
+            Bitpix::UnsignedByte => self
+                .read_image_as::<u8>(n)?
+                .into_iter()
+                .map(|v| bzero + bscale * v as f64)
+                .collect(),
+            Bitpix::SignedShort => self
+                .read_image_as::<i16>(n)?
+                .into_iter()
+                .map(|v| bzero + bscale * v as f64)
+                .collect(),
+            Bitpix::SignedInt => self
+                .read_image_as::<i32>(n)?
+                .into_iter()
+                .map(|v| bzero + bscale * v as f64)
+                .collect(),
+            Bitpix::SignedLong => self
+                .read_image_as::<i64>(n)?
+                .into_iter()
+                .map(|v| bzero + bscale * v as f64)
+                .collect(),
+            Bitpix::Float => self
+                .read_image_as::<f32>(n)?
+                .into_iter()
+                .map(|v| bzero + bscale * v as f64)
+                .collect(),
+            Bitpix::Double => self
+                .read_image_as::<f64>(n)?
+                .into_iter()
+                .map(|v| bzero + bscale * v)
+                .collect(),
+        };
+        Ok(ImageData::F64(pixels))
     }
 
     fn scan_one(&mut self, offset: u64) -> Result<Option<u64>> {
@@ -232,6 +353,14 @@ mod tests {
         Card::Value {
             keyword: keyword.to_string(),
             value: CardValue::Integer(value),
+            comment: None,
+        }
+    }
+
+    fn float_card(keyword: &str, value: f64) -> Card {
+        Card::Value {
+            keyword: keyword.to_string(),
+            value: CardValue::Float(value),
             comment: None,
         }
     }
@@ -444,10 +573,11 @@ mod tests {
     #[test]
     fn test_read_image_as_i16_byte_swap() {
         let header = make_primary_header(16, &[2]);
-        // 1i16 big-endian = 0x00, 0x01, -1i16 big-endian = 0xFF, 0xFF
-        let buf = write_hdu(&header, &[0x00u8, 0x01, 0xFF, 0xFF]);
+        let expected: Vec<i16> = [1i16, -1i16].to_vec();
+        let data: Vec<u8> = expected.iter().flat_map(|v| v.to_be_bytes()).collect();
+        let buf = write_hdu(&header, &data);
         let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
-        assert_eq!(fits.read_image_as::<i16>(0).unwrap(), vec![1i16, -1i16]);
+        assert_eq!(fits.read_image_as::<i16>(0).unwrap(), expected);
     }
 
     #[test]
@@ -471,12 +601,65 @@ mod tests {
     #[test]
     fn test_read_image_dispatch() {
         let header = make_primary_header(16, &[2]);
-        let buf = write_hdu(&header, &[0x00u8, 0x01, 0x00, 0x02]);
+        let expected: Vec<i16> = [1i16, 2i16].to_vec();
+        let data: Vec<u8> = expected.iter().flat_map(|v| v.to_be_bytes()).collect();
+        let buf = write_hdu(&header, &data);
         let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
-        let image = fits.read_image(0).unwrap();
+        let image = fits.read_image_raw(0).unwrap();
         match image {
-            ImageData::I16(pixels) => assert_eq!(pixels, vec![1i16, 2i16]),
+            ImageData::I16(pixels) => assert_eq!(pixels, expected),
             _ => panic!("expected ImageData::I16"),
+        }
+    }
+
+    #[test]
+    fn test_read_image_u16_bzero() {
+        // BITPIX=16 + BZERO=32768: i16 stored, u16 physical via MSB flip
+        let mut h = Header::new();
+        h.append(Card::Value {
+            keyword: "SIMPLE".into(),
+            value: CardValue::Logical(true),
+            comment: None,
+        });
+        h.append(int_card("BITPIX", 16));
+        h.append(int_card("NAXIS", 1));
+        h.append(int_card("NAXIS1", 2));
+        h.append(float_card("BZERO", 32768.0));
+        h.append(float_card("BSCALE", 1.0));
+        h.append(Card::End);
+        let data: Vec<u8> = [i16::MIN, i16::MAX]
+            .iter()
+            .flat_map(|v| v.to_be_bytes())
+            .collect();
+        let buf = write_hdu(&h, &data);
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        match fits.read_image(0).unwrap() {
+            ImageData::U16(pixels) => assert_eq!(pixels, vec![0u16, 65535u16]),
+            _ => panic!("expected ImageData::U16"),
+        }
+    }
+
+    #[test]
+    fn test_read_image_f64_scaling() {
+        // Arbitrary BSCALE/BZERO on integer data
+        let mut h = Header::new();
+        h.append(Card::Value {
+            keyword: "SIMPLE".into(),
+            value: CardValue::Logical(true),
+            comment: None,
+        });
+        h.append(int_card("BITPIX", 8));
+        h.append(int_card("NAXIS", 1));
+        h.append(int_card("NAXIS1", 2));
+        h.append(float_card("BSCALE", 2.0));
+        h.append(float_card("BZERO", 10.0));
+        h.append(Card::End);
+        // physical = 10.0 + 2.0 * stored: [5, 0] = [20.0, 10.0]
+        let buf = write_hdu(&h, &[5u8, 0u8]);
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        match fits.read_image(0).unwrap() {
+            ImageData::F64(pixels) => assert_eq!(pixels, vec![20.0f64, 10.0f64]),
+            _ => panic!("expected ImageData::F64"),
         }
     }
 }
