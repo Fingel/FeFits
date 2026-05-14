@@ -1,23 +1,31 @@
 #![cfg(feature = "integration")]
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
-static FIXTURES: OnceLock<PathBuf> = OnceLock::new();
+use fefits::card::CardValue;
+use fefits::fits::Fits;
+use rstest::rstest;
 
-fn fixtures() -> &'static PathBuf {
-    FIXTURES.get_or_init(|| {
-        let p = PathBuf::from("tests/fixtures");
-        assert!(
-            p.exists(),
-            "fixtures missing — run `just fetch-test-data` first"
-        );
-        p
-    })
-}
+#[rstest]
+fn test_mandatory_headers(#[files("tests/fixtures/*.fits")] path: PathBuf) {
+    let mut fits = Fits::open(&path).expect("failed to open file");
+    let filename = path.file_name().unwrap().to_string_lossy();
+    let header = fits
+        .read_header(0)
+        .expect("failed to read primary HDU header");
+    assert_eq!(
+        header.get_value("SIMPLE"),
+        Some(&CardValue::Logical(true)),
+        "{filename}: SIMPLE must be T"
+    );
+    header
+        .bitpix()
+        .unwrap_or_else(|e| panic!("{filename}: {e}"));
+    let naxis = header.naxis().unwrap_or_else(|e| panic!("{filename}: {e}"));
 
-#[test]
-fn placeholder() {
-    let _fixtures = fixtures();
-    // TODO: add tests
+    for n in 1..=naxis {
+        header
+            .naxisn(n)
+            .unwrap_or_else(|e| panic!("{filename}: NAXIS{n} missing or invalid: {e}"));
+    }
 }

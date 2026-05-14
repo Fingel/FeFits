@@ -9,3 +9,6 @@ integration = []
 [dependencies]
 ryu = "1.0.23"
 thiserror = "2.0.18"
+
+[dev-dependencies]
+rstest = "0.26.1"
