@@ -1,4 +1,5 @@
 /// See 4.4.2.5 Table 11 For the conversion conventions for signed to unsigned int values
+#[derive(Debug)]
 pub enum ImageData {
     I8(Vec<i8>),   // BITPIX=8, BZERO=-128 (u8 stored, i8 physical)
     U8(Vec<u8>),   // BITPIX=8, no scaling

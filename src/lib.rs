@@ -8,3 +8,4 @@ pub mod io;
 pub mod pixel;
 
 pub use bitpix::Bitpix;
+pub use fits::HduKind;

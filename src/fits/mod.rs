@@ -22,14 +22,19 @@ pub enum HduKind {
     Image,
     BinaryTable,
     AsciiTable,
+    CompressedImage,
 }
 
-impl From<XtensionType> for HduKind {
-    fn from(x: XtensionType) -> Self {
-        match x {
-            XtensionType::Image => HduKind::Image,
-            XtensionType::BinaryTable => HduKind::BinaryTable,
-            XtensionType::AsciiTable => HduKind::AsciiTable,
+fn hdu_kind_from_extension_header(header: &Header) -> Result<HduKind> {
+    match header.xtension()? {
+        XtensionType::Image => Ok(HduKind::Image),
+        XtensionType::AsciiTable => Ok(HduKind::AsciiTable),
+        XtensionType::BinaryTable => {
+            if header.get("ZCMPTYPE").is_some() && header.get("ZNAXIS").is_some() {
+                Ok(HduKind::CompressedImage)
+            } else {
+                Ok(HduKind::BinaryTable)
+            }
         }
     }
 }
@@ -47,7 +52,10 @@ pub struct HduEntry {
 
 impl HduEntry {
     pub fn is_image(&self) -> bool {
-        matches!(self.kind, HduKind::Primary | HduKind::Image)
+        matches!(
+            self.kind,
+            HduKind::Primary | HduKind::Image | HduKind::CompressedImage
+        )
     }
 }
 
@@ -102,22 +110,29 @@ impl<R: Read + Seek> Fits<R> {
 
     /// Returns the index of the first HDU that contains a 2D (or higher) image
     pub fn find_image(&mut self) -> Result<Option<usize>> {
-        let candidates: Vec<usize> = self
+        let candidates: Vec<(usize, HduKind)> = self
             .index
             .iter()
             .filter(|e| e.is_image())
-            .map(|e| e.index)
+            .map(|e| (e.index, e.kind.clone()))
             .collect();
 
-        for idx in candidates {
+        for (idx, kind) in candidates {
             let header = self.read_header(idx)?;
-            let Ok(naxis) = header.naxis() else { continue };
-            if naxis < 2 {
-                continue;
-            }
-            let Ok(w) = header.naxisn(1) else { continue };
-            let Ok(h) = header.naxisn(2) else { continue };
-            if w > 0 && h > 0 {
+
+            let (naxis, w, h) = if kind == HduKind::CompressedImage {
+                let Ok(naxis) = header.znaxis() else { continue };
+                let Ok(w) = header.znaxisn(1) else { continue };
+                let Ok(h) = header.znaxisn(2) else { continue };
+                (naxis, w, h)
+            } else {
+                let Ok(naxis) = header.naxis() else { continue };
+                let Ok(w) = header.naxisn(1) else { continue };
+                let Ok(h) = header.naxisn(2) else { continue };
+                (naxis, w, h)
+            };
+
+            if naxis >= 2 && w > 0 && h > 0 {
                 return Ok(Some(idx));
             }
         }
@@ -143,6 +158,11 @@ impl<R: Read + Seek> Fits<R> {
         let entry = self.index.get(n).ok_or(Error::HduNotFound(n))?;
         match entry.kind {
             HduKind::Primary | HduKind::Image => {}
+            HduKind::CompressedImage => {
+                return Err(Error::UnsupportedFeature(
+                    "reading tile-compressed images is not yet implemented".into(),
+                ));
+            }
             ref k => return Err(Error::InvalidHDU(format!("HDU {n} is {k:?}, not an image"))),
         }
         let data_offset = entry.data_offset;
@@ -288,7 +308,7 @@ impl<R: Read + Seek> Fits<R> {
         let kind = if self.index.is_empty() {
             HduKind::Primary
         } else {
-            header.xtension()?.into()
+            hdu_kind_from_extension_header(&header)?
         };
         let name = header
             .get("EXTNAME")
@@ -360,6 +380,30 @@ mod tests {
         for (i, &n) in axes.iter().enumerate() {
             h.append(int_card(&format!("NAXIS{}", i + 1), n));
         }
+        h.append(Card::End);
+        h
+    }
+
+    fn make_compressed_image_extension(znaxis1: i64, znaxis2: i64) -> Header {
+        let mut h = Header::new();
+        h.append(Card::Xtension {
+            x: XtensionType::BinaryTable,
+            comment: None,
+        });
+        h.append(int_card("BITPIX", 8));
+        h.append(int_card("NAXIS", 2));
+        h.append(int_card("NAXIS1", 8)); // bytes per tile row in the table
+        h.append(int_card("NAXIS2", 1)); // one tile
+        h.append(int_card("PCOUNT", 0));
+        h.append(int_card("GCOUNT", 1));
+        h.append(Card::Value {
+            keyword: "ZCMPTYPE".into(),
+            value: CardValue::String("RICE_1".into()),
+            comment: None,
+        });
+        h.append(int_card("ZNAXIS", 2));
+        h.append(int_card("ZNAXIS1", znaxis1));
+        h.append(int_card("ZNAXIS2", znaxis2));
         h.append(Card::End);
         h
     }
@@ -659,8 +703,65 @@ mod tests {
         };
         assert!(entry(HduKind::Primary).is_image());
         assert!(entry(HduKind::Image).is_image());
+        assert!(entry(HduKind::CompressedImage).is_image());
         assert!(!entry(HduKind::BinaryTable).is_image());
         assert!(!entry(HduKind::AsciiTable).is_image());
+    }
+
+    #[test]
+    fn test_scan_detects_compressed_image() {
+        let mut buf = write_hdu(&make_primary_header(8, &[]), &[]);
+        buf.extend(write_hdu(&make_compressed_image_extension(100, 50), &[]));
+        let fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        assert_eq!(fits.hdu(1).unwrap().kind, HduKind::CompressedImage);
+    }
+
+    #[test]
+    fn test_scan_plain_bintable_not_compressed() {
+        let mut h = Header::new();
+        h.append(Card::Xtension {
+            x: XtensionType::BinaryTable,
+            comment: None,
+        });
+        h.append(int_card("BITPIX", 8));
+        h.append(int_card("NAXIS", 2));
+        h.append(int_card("NAXIS1", 8));
+        h.append(int_card("NAXIS2", 1));
+        h.append(int_card("PCOUNT", 0));
+        h.append(int_card("GCOUNT", 1));
+        h.append(Card::End);
+
+        let mut buf = write_hdu(&make_primary_header(8, &[]), &[]);
+        buf.extend(write_hdu(&h, &[]));
+        let fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        assert_eq!(fits.hdu(1).unwrap().kind, HduKind::BinaryTable);
+    }
+
+    #[test]
+    fn test_read_image_compressed_unsupported() {
+        let mut buf = write_hdu(&make_primary_header(8, &[]), &[]);
+        buf.extend(write_hdu(&make_compressed_image_extension(100, 50), &[]));
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        assert!(matches!(
+            fits.read_image(1).unwrap_err(),
+            crate::error::Error::UnsupportedFeature(_)
+        ));
+    }
+
+    #[test]
+    fn test_find_image_compressed() {
+        let mut buf = write_hdu(&make_primary_header(8, &[]), &[]);
+        buf.extend(write_hdu(&make_compressed_image_extension(100, 50), &[]));
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        assert_eq!(fits.find_image().unwrap(), Some(1));
+    }
+
+    #[test]
+    fn test_find_image_skips_compressed_with_zero_dimension() {
+        let mut buf = write_hdu(&make_primary_header(8, &[]), &[]);
+        buf.extend(write_hdu(&make_compressed_image_extension(0, 50), &[]));
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        assert_eq!(fits.find_image().unwrap(), None);
     }
 
     #[test]
