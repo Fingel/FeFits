@@ -45,6 +45,12 @@ pub struct HduEntry {
     pub version: Option<i64>,
 }
 
+impl HduEntry {
+    pub fn is_image(&self) -> bool {
+        matches!(self.kind, HduKind::Primary | HduKind::Image)
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Fits<R: Read + Seek> {
     reader: R,
@@ -92,6 +98,30 @@ impl<R: Read + Seek> Fits<R> {
 
     pub fn iter_hdus(&self) -> impl Iterator<Item = &HduEntry> {
         self.index.iter()
+    }
+
+    /// Returns the index of the first HDU that contains a 2D (or higher) image
+    pub fn find_image(&mut self) -> Result<Option<usize>> {
+        let candidates: Vec<usize> = self
+            .index
+            .iter()
+            .filter(|e| e.is_image())
+            .map(|e| e.index)
+            .collect();
+
+        for idx in candidates {
+            let header = self.read_header(idx)?;
+            let Ok(naxis) = header.naxis() else { continue };
+            if naxis < 2 {
+                continue;
+            }
+            let Ok(w) = header.naxisn(1) else { continue };
+            let Ok(h) = header.naxisn(2) else { continue };
+            if w > 0 && h > 0 {
+                return Ok(Some(idx));
+            }
+        }
+        Ok(None)
     }
 
     pub fn read_header(&mut self, n: usize) -> Result<Header> {
@@ -614,5 +644,53 @@ mod tests {
             ImageData::F64(pixels) => assert_eq!(pixels, vec![20.0f64, 10.0f64]),
             _ => panic!("expected ImageData::F64"),
         }
+    }
+
+    #[test]
+    fn test_is_image() {
+        let entry = |kind| HduEntry {
+            index: 0,
+            header_offset: 0,
+            data_offset: 0,
+            data_len: 0,
+            kind,
+            name: None,
+            version: None,
+        };
+        assert!(entry(HduKind::Primary).is_image());
+        assert!(entry(HduKind::Image).is_image());
+        assert!(!entry(HduKind::BinaryTable).is_image());
+        assert!(!entry(HduKind::AsciiTable).is_image());
+    }
+
+    #[test]
+    fn test_find_image_primary_2d() {
+        let buf = write_hdu(&make_primary_header(16, &[100, 50]), &[]);
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        assert_eq!(fits.find_image().unwrap(), Some(0));
+    }
+
+    #[test]
+    fn test_find_image_skips_empty_primary() {
+        let mut buf = write_hdu(&make_primary_header(8, &[]), &[]); // no image data
+        buf.extend(write_hdu(&make_image_extension(16, &[100, 50]), &[]));
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        assert_eq!(fits.find_image().unwrap(), Some(1));
+    }
+
+    #[test]
+    fn test_find_image_skips_1d() {
+        // Not 2d
+        let buf = write_hdu(&make_primary_header(16, &[100]), &[]);
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        assert_eq!(fits.find_image().unwrap(), None);
+    }
+
+    #[test]
+    fn test_find_image_skips_zero_dimension() {
+        // NAXIS1 = 0, skip
+        let buf = write_hdu(&make_primary_header(16, &[0, 50]), &[]);
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+        assert_eq!(fits.find_image().unwrap(), None);
     }
 }
