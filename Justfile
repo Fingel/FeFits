@@ -17,4 +17,4 @@ fetch-test-data:
 
 # Remove downloaded test fixtures
 clean-test-data:
-    rm -rf {{ fixtures_dir }} {{ fixtures_archive }}
+    rm -rf {{ fixtures_dir }} {{ fixtures_archive }} {{ output_dir }}
