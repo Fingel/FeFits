@@ -28,3 +28,4 @@ target
 # Integration test fixtures (download with `just fetch-test-data`)
 tests/fixtures/
 tests/fixtures.tar.xz
+tests/output/

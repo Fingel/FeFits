@@ -11,4 +11,5 @@ ryu = "1.0.23"
 thiserror = "2.0.18"
 
 [dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
 rstest = "0.26.1"
