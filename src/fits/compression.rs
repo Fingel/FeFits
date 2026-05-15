@@ -4,6 +4,45 @@ use crate::{
     header::Header,
 };
 
+/// Compression algorithms. Note that for now only Rice is supported,
+/// the other algorithms will parse but are not implemented.
+/// Spec H.1–H.5.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CmpType {
+    Rice,
+    Gzip1,
+    Gzip2,
+    HCompress,
+    Plio,
+}
+
+impl CmpType {
+    pub fn from_header(h: &Header) -> Result<Self> {
+        match h.get_value("ZCMPTYPE") {
+            None => Err(Error::MissingKeyword("ZCMPTYPE")),
+            Some(CardValue::String(s)) => Self::from_str(s),
+            Some(_) => Err(Error::InvalidKeywordValue {
+                keyword: "ZCMPTYPE",
+                value: "non-string".into(),
+                reason: "must be a string",
+            }),
+        }
+    }
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "RICE_1" => Ok(Self::Rice),
+            "GZIP_1" => Ok(Self::Gzip1),
+            "GZIP_2" => Ok(Self::Gzip2),
+            "HCOMPRESS_1" => Ok(Self::HCompress),
+            "PLIO_1" => Ok(Self::Plio),
+            other => Err(Error::UnsupportedFeature(format!(
+                "unknown ZCMPTYPE '{other}'"
+            ))),
+        }
+    }
+}
+
 impl Header {
     pub fn znaxis(&self) -> Result<usize> {
         match self.get_value("ZNAXIS") {
@@ -31,9 +70,43 @@ impl Header {
 
 #[cfg(test)]
 mod tests {
-    use crate::card::Card;
+    use crate::card::{Card, CardValue};
 
     use super::*;
+
+    fn str_card(keyword: &str, value: &str) -> Card {
+        Card::Value {
+            keyword: keyword.to_string(),
+            value: CardValue::String(value.to_string()),
+            comment: None,
+        }
+    }
+
+    #[test]
+    fn test_cmptype_all_known_values() {
+        let cases = [
+            ("RICE_1", CmpType::Rice),
+            ("GZIP_1", CmpType::Gzip1),
+            ("GZIP_2", CmpType::Gzip2),
+            ("HCOMPRESS_1", CmpType::HCompress),
+            ("PLIO_1", CmpType::Plio),
+        ];
+        for (s, expected) in cases {
+            let mut h = Header::new();
+            h.set(str_card("ZCMPTYPE", s));
+            assert_eq!(CmpType::from_header(&h).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn test_cmptype_unknown_returns_unsupported() {
+        let mut h = Header::new();
+        h.set(str_card("ZCMPTYPE", "WAVELET_2"));
+        assert!(matches!(
+            CmpType::from_header(&h),
+            Err(Error::UnsupportedFeature(_))
+        ));
+    }
 
     #[test]
     fn test_znaxisn() {
