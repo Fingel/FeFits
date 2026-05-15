@@ -6,13 +6,18 @@ use crate::{
 
 /// Compression algorithms. Note that for now only Rice is supported,
 /// the other algorithms will parse but are not implemented.
-/// Spec H.1–H.5.
+/// 10.1.2
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CmpType {
+    /// 10.4.1
     Rice,
+    /// 10.4.2
     Gzip1,
+    /// 10.4.2
     Gzip2,
+    /// 10.4.4
     HCompress,
+    /// 10.4.3
     Plio,
 }
 
@@ -45,8 +50,8 @@ impl CmpType {
 
 /// Dithering strategy used when quantizing floating-point images to integers.
 ///
-/// From the `ZQUANTIZ` keyword. Absent means no quantization was applied.
-/// Spec H.6.
+/// From the `ZQUANTIZ` keyword. None means no quantization was applied.
+/// 10.2
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuantizeMethod {
     NoDither,
@@ -75,6 +80,42 @@ impl QuantizeMethod {
             other => Err(Error::UnsupportedFeature(format!(
                 "unknown ZQUANTIZ '{other}'"
             ))),
+        }
+    }
+}
+
+/// Algorithm-specific tuning parameters
+///
+/// Only RICE_1 is supported at this time.
+/// 10.1.2 (keywords), 10.4 (parameters for algorithms).
+#[derive(Debug, Clone, PartialEq)]
+pub enum AlgoParams {
+    /// 10.4.1, Table 37 Keyword parameters for Rice compression
+    Rice {
+        block_size: u32,
+        byte_pix: u32,
+    },
+    None,
+}
+
+impl AlgoParams {
+    pub fn from_header(h: &Header, cmp: &CmpType) -> Result<Self> {
+        match cmp {
+            CmpType::Rice => {
+                let block_size = h
+                    .get_value("ZVAL1")
+                    .and_then(|v| v.as_integer())
+                    .unwrap_or(32) as u32;
+                let byte_pix = h
+                    .get_value("ZVAL2")
+                    .and_then(|v| v.as_integer())
+                    .unwrap_or(4) as u32;
+                Ok(AlgoParams::Rice {
+                    block_size,
+                    byte_pix,
+                })
+            }
+            _ => Ok(AlgoParams::None),
         }
     }
 }
@@ -118,6 +159,14 @@ mod tests {
         }
     }
 
+    fn int_card(keyword: &str, value: i64) -> Card {
+        Card::Value {
+            keyword: keyword.to_string(),
+            value: CardValue::Integer(value),
+            comment: None,
+        }
+    }
+
     // --- CmpType ---
 
     #[test]
@@ -144,6 +193,49 @@ mod tests {
             CmpType::from_header(&h),
             Err(Error::UnsupportedFeature(_))
         ));
+    }
+
+    // --- AlgoParams ---
+
+    #[test]
+    fn test_algo_params_rice_defaults() {
+        let h = Header::new();
+        let params = AlgoParams::from_header(&h, &CmpType::Rice).unwrap();
+        assert_eq!(
+            params,
+            AlgoParams::Rice {
+                block_size: 32,
+                byte_pix: 4
+            }
+        );
+    }
+
+    #[test]
+    fn test_algo_params_rice_explicit() {
+        let mut h = Header::new();
+        h.set(int_card("ZVAL1", 16));
+        h.set(int_card("ZVAL2", 4));
+        let params = AlgoParams::from_header(&h, &CmpType::Rice).unwrap();
+        assert_eq!(
+            params,
+            AlgoParams::Rice {
+                block_size: 16,
+                byte_pix: 4
+            }
+        );
+    }
+
+    #[test]
+    fn test_algo_params_none_for_non_rice() {
+        let h = Header::new();
+        for cmp in [
+            CmpType::Gzip1,
+            CmpType::Gzip2,
+            CmpType::HCompress,
+            CmpType::Plio,
+        ] {
+            assert_eq!(AlgoParams::from_header(&h, &cmp).unwrap(), AlgoParams::None);
+        }
     }
 
     // --- QuantizeMethod ---
