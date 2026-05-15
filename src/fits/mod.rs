@@ -14,6 +14,7 @@ use crate::{
     pixel::Pixel,
 };
 
+mod compression;
 mod image;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
