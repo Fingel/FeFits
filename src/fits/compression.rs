@@ -43,6 +43,42 @@ impl CmpType {
     }
 }
 
+/// Dithering strategy used when quantizing floating-point images to integers.
+///
+/// From the `ZQUANTIZ` keyword. Absent means no quantization was applied.
+/// Spec H.6.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuantizeMethod {
+    NoDither,
+    SubtractiveDither1,
+    SubtractiveDither2,
+}
+
+impl QuantizeMethod {
+    pub fn from_header(h: &Header) -> Result<Option<Self>> {
+        match h.get_value("ZQUANTIZ") {
+            None => Ok(None),
+            Some(CardValue::String(s)) => Self::from_str(s).map(Some),
+            Some(_) => Err(Error::InvalidKeywordValue {
+                keyword: "ZQUANTIZ",
+                value: "non-string".into(),
+                reason: "must be a string",
+            }),
+        }
+    }
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "NO_DITHER" => Ok(Self::NoDither),
+            "SUBTRACTIVE_DITHER_1" => Ok(Self::SubtractiveDither1),
+            "SUBTRACTIVE_DITHER_2" => Ok(Self::SubtractiveDither2),
+            other => Err(Error::UnsupportedFeature(format!(
+                "unknown ZQUANTIZ '{other}'"
+            ))),
+        }
+    }
+}
+
 impl Header {
     pub fn znaxis(&self) -> Result<usize> {
         match self.get_value("ZNAXIS") {
@@ -82,6 +118,8 @@ mod tests {
         }
     }
 
+    // --- CmpType ---
+
     #[test]
     fn test_cmptype_all_known_values() {
         let cases = [
@@ -107,6 +145,39 @@ mod tests {
             Err(Error::UnsupportedFeature(_))
         ));
     }
+
+    // --- QuantizeMethod ---
+
+    #[test]
+    fn test_quantize_method_all_known_values() {
+        let cases = [
+            ("NO_DITHER", QuantizeMethod::NoDither),
+            ("SUBTRACTIVE_DITHER_1", QuantizeMethod::SubtractiveDither1),
+            ("SUBTRACTIVE_DITHER_2", QuantizeMethod::SubtractiveDither2),
+        ];
+        for (s, expected) in cases {
+            let mut h = Header::new();
+            h.set(str_card("ZQUANTIZ", s));
+            assert_eq!(QuantizeMethod::from_header(&h).unwrap(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn test_quantize_method_absent_is_none() {
+        assert_eq!(QuantizeMethod::from_header(&Header::new()).unwrap(), None);
+    }
+
+    #[test]
+    fn test_quantize_method_unknown_returns_unsupported() {
+        let mut h = Header::new();
+        h.set(str_card("ZQUANTIZ", "SPECIAL_DITHER"));
+        assert!(matches!(
+            QuantizeMethod::from_header(&h),
+            Err(Error::UnsupportedFeature(_))
+        ));
+    }
+
+    // ---znaxis* ---
 
     #[test]
     fn test_znaxisn() {
