@@ -249,25 +249,8 @@ impl Header {
 
 #[cfg(test)]
 mod tests {
-    use crate::card::{Card, CardValue};
-
     use super::*;
-
-    fn str_card(keyword: &str, value: &str) -> Card {
-        Card::Value {
-            keyword: keyword.to_string(),
-            value: CardValue::String(value.to_string()),
-            comment: None,
-        }
-    }
-
-    fn int_card(keyword: &str, value: i64) -> Card {
-        Card::Value {
-            keyword: keyword.to_string(),
-            value: CardValue::Integer(value),
-            comment: None,
-        }
-    }
+    use crate::testutil::*;
 
     // --- CmpType ---
 
@@ -503,25 +486,9 @@ mod tests {
     #[test]
     fn test_znaxisn() {
         let mut header = Header::new();
-        let znaxis = Card::Value {
-            keyword: "ZNAXIS".to_string(),
-            value: CardValue::Integer(2),
-            comment: None,
-        };
-        let znaxis1 = Card::Value {
-            keyword: "ZNAXIS1".to_string(),
-            value: CardValue::Integer(100),
-            comment: None,
-        };
-        let znaxis2 = Card::Value {
-            keyword: "ZNAXIS2".to_string(),
-            value: CardValue::Integer(50),
-            comment: None,
-        };
-
-        header.append(znaxis);
-        header.append(znaxis1);
-        header.append(znaxis2);
+        header.append(int_card("ZNAXIS", 2));
+        header.append(int_card("ZNAXIS1", 100));
+        header.append(int_card("ZNAXIS2", 50));
 
         assert_eq!(header.znaxis().unwrap(), 2);
         assert_eq!(header.znaxisn(1).unwrap(), 100);

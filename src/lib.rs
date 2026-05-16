@@ -7,5 +7,8 @@ pub mod header;
 pub mod io;
 pub mod pixel;
 
+#[cfg(test)]
+pub mod testutil;
+
 pub use bitpix::Bitpix;
 pub use fits::HduKind;

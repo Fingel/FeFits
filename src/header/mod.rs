@@ -267,7 +267,7 @@ fn glob_match(pattern: &[u8], text: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::{card::CardValue, io::Block};
+    use crate::{card::CardValue, io::Block, testutil::*};
 
     use super::*;
 
@@ -679,14 +679,6 @@ mod tests {
         let mut reader = BlockReader::new(buf.as_slice());
         // missing end would error here
         assert!(Header::read_from_block_reader(&mut reader).is_ok());
-    }
-
-    fn int_card(keyword: &str, value: i64) -> Card {
-        Card::Value {
-            keyword: keyword.to_string(),
-            value: CardValue::Integer(value),
-            comment: None,
-        }
     }
 
     #[test]

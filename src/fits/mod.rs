@@ -351,31 +351,8 @@ mod tests {
         card::{Card, CardValue},
         extension::XtensionType,
         header::Header,
+        testutil::*,
     };
-
-    fn int_card(keyword: &str, value: i64) -> Card {
-        Card::Value {
-            keyword: keyword.to_string(),
-            value: CardValue::Integer(value),
-            comment: None,
-        }
-    }
-
-    fn float_card(keyword: &str, value: f64) -> Card {
-        Card::Value {
-            keyword: keyword.to_string(),
-            value: CardValue::Float(value),
-            comment: None,
-        }
-    }
-
-    fn bool_card(keyword: &str, value: bool) -> Card {
-        Card::Value {
-            keyword: keyword.to_string(),
-            value: CardValue::Logical(value),
-            comment: None,
-        }
-    }
 
     fn make_primary_header(bitpix: i64, axes: &[i64]) -> Header {
         let mut h = Header::new();
