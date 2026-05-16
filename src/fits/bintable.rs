@@ -19,6 +19,23 @@ pub enum VlaElementType {
 }
 
 impl VlaElementType {
+    /// Bytes per element in the heap. 7.3.2, Table 18
+    pub fn byte_size(&self) -> u64 {
+        match self {
+            Self::Logical => 1,
+            Self::Bit => 1,
+            Self::UnsignedByte => 1,
+            Self::Int16 => 2,
+            Self::Int32 => 4,
+            Self::Int64 => 8,
+            Self::Float32 => 4,
+            Self::Float64 => 8,
+            Self::Complex32 => 8,
+            Self::Complex64 => 16,
+            Self::Char => 1,
+        }
+    }
+
     pub fn from_char(c: char, tform: &str) -> Result<Self> {
         match c {
             'L' => Ok(Self::Logical),
@@ -161,6 +178,23 @@ fn parse_emax(s: &str) -> u64 {
     } else {
         0
     }
+}
+
+/// Metadata for a single binary table column. 7.3.2
+///
+/// Bundles the column header keywords (TTYPEn, TFORMn, TUNITn) with
+/// `byte_offset`, which is computed by summing
+/// `row_bytes()` across all preceding columns.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColumnDesc {
+    /// Column name from TTYPEn. Optional per spec.
+    pub name: Option<String>,
+    /// Physical unit from TUNITn. Optional per spec.
+    pub unit: Option<String>,
+    /// Parsed TFORMn.
+    pub form: TForm,
+    /// Byte offset of this column within a row.
+    pub byte_offset: u64,
 }
 
 #[cfg(test)]
