@@ -1,4 +1,5 @@
 use crate::{
+    Bitpix,
     card::CardValue,
     error::{Error, Result},
     header::Header,
@@ -173,7 +174,55 @@ impl TileGeometry {
     }
 }
 
+/// All compression metadata needed to decompress a tile-compressed image. 10.1
+/// This is a collection of all the previous compression related structs and enums
+/// defined earlier in this module + bitpix
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompressionHeader {
+    /// Original image pixel type (from ZBITPIX). 10.1.1
+    pub bitpix: Bitpix,
+    pub cmp_type: CmpType,
+    pub algo_params: AlgoParams,
+    pub quantize: Option<QuantizeMethod>,
+    pub tiles: TileGeometry,
+}
+
+impl CompressionHeader {
+    pub fn from_header(h: &Header) -> Result<Self> {
+        let bitpix = h.zbitpix()?;
+        let cmp_type = CmpType::from_header(h)?;
+        let algo_params = AlgoParams::from_header(h, &cmp_type)?;
+        let quantize = QuantizeMethod::from_header(h)?;
+        let tiles = TileGeometry::from_header(h)?;
+        Ok(CompressionHeader {
+            bitpix,
+            cmp_type,
+            algo_params,
+            quantize,
+            tiles,
+        })
+    }
+}
+
 impl Header {
+    pub fn zbitpix(&self) -> Result<Bitpix> {
+        match self.get_value("ZBITPIX") {
+            None => Err(Error::MissingKeyword("ZBITPIX")),
+            Some(CardValue::Integer(i)) => {
+                Bitpix::try_from(*i).map_err(|_| Error::InvalidKeywordValue {
+                    keyword: "ZBITPIX",
+                    value: i.to_string(),
+                    reason: "must be one of 8, 16, 32, 64, -32, or -64",
+                })
+            }
+            Some(_) => Err(Error::InvalidKeywordValue {
+                keyword: "ZBITPIX",
+                value: "non-integer".into(),
+                reason: "must be an integer",
+            }),
+        }
+    }
+
     pub fn znaxis(&self) -> Result<usize> {
         match self.get_value("ZNAXIS") {
             None => Err(Error::MissingKeyword("ZNAXIS")),
@@ -319,6 +368,71 @@ mod tests {
         assert!(matches!(
             QuantizeMethod::from_header(&h),
             Err(Error::UnsupportedFeature(_))
+        ));
+    }
+
+    // --- CompressionHeader ---
+
+    fn full_compression_header() -> Header {
+        let mut h = Header::new();
+        h.set(int_card("ZBITPIX", 16));
+        h.set(str_card("ZCMPTYPE", "RICE_1"));
+        h.set(int_card("ZNAXIS", 2));
+        h.set(int_card("ZNAXIS1", 100));
+        h.set(int_card("ZNAXIS2", 50));
+        h
+    }
+
+    #[test]
+    fn test_compression_header_rice_defaults() {
+        let h = full_compression_header();
+        let ch = CompressionHeader::from_header(&h).unwrap();
+
+        assert_eq!(ch.bitpix, Bitpix::SignedShort);
+        assert_eq!(ch.cmp_type, CmpType::Rice);
+        assert_eq!(
+            ch.algo_params,
+            AlgoParams::Rice {
+                block_size: 32,
+                byte_pix: 4
+            }
+        );
+        assert_eq!(ch.quantize, None);
+        assert_eq!(ch.tiles.image_shape, vec![100, 50]);
+        // default row-by-row tiling
+        assert_eq!(ch.tiles.tile_shape, vec![100, 1]);
+    }
+
+    #[test]
+    fn test_compression_header_rice_params() {
+        let mut h = full_compression_header();
+        // Non-default Rice params: BLOCKSIZE=16, BYTEPIX=2
+        h.set(int_card("ZVAL1", 16));
+        h.set(int_card("ZVAL2", 2));
+        // Non-default tiling: 32x32 pixel blocks
+        h.set(int_card("ZTILE1", 32));
+        h.set(int_card("ZTILE2", 32));
+        let ch = CompressionHeader::from_header(&h).unwrap();
+
+        assert_eq!(
+            ch.algo_params,
+            AlgoParams::Rice {
+                block_size: 16,
+                byte_pix: 2
+            }
+        );
+        assert_eq!(ch.tiles.tile_shape, vec![32, 32]);
+        // ceil(100/32)=4 tiles across, ceil(50/32)=2 tiles tall = 8 total
+        assert_eq!(ch.tiles.total_tiles(), 8);
+    }
+
+    #[test]
+    fn test_compression_header_missing_zbitpix() {
+        let mut h = full_compression_header();
+        h.remove("ZBITPIX");
+        assert!(matches!(
+            CompressionHeader::from_header(&h),
+            Err(Error::MissingKeyword("ZBITPIX"))
         ));
     }
 
