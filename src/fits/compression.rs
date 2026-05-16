@@ -96,7 +96,7 @@ pub enum AlgoParams {
         block_size: u32,
         byte_pix: u32,
     },
-    None,
+    Other,
 }
 
 impl AlgoParams {
@@ -116,7 +116,7 @@ impl AlgoParams {
                     byte_pix,
                 })
             }
-            _ => Ok(AlgoParams::None),
+            _ => Ok(AlgoParams::Other),
         }
     }
 }
@@ -336,7 +336,10 @@ mod tests {
             CmpType::HCompress,
             CmpType::Plio,
         ] {
-            assert_eq!(AlgoParams::from_header(&h, &cmp).unwrap(), AlgoParams::None);
+            assert_eq!(
+                AlgoParams::from_header(&h, &cmp).unwrap(),
+                AlgoParams::Other
+            );
         }
     }
 
