@@ -14,6 +14,7 @@ use crate::{
     pixel::Pixel,
 };
 
+pub mod bintable;
 pub mod compression;
 mod image;
 
