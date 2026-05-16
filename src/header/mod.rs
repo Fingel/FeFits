@@ -207,7 +207,6 @@ impl Header {
     /// Note that PCOUNT is also the total length in bytes of the supplemtntal data area (heap)
     /// for binary tables with variable-length columns.
     pub fn data_len(&self) -> Result<u64> {
-        // TODO: test
         let naxis_count = self.naxis()?;
         if naxis_count == 0 {
             return Ok(0);
