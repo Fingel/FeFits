@@ -204,6 +204,8 @@ impl Header {
 
     /// 4.4.1.2
     /// Nbits = |BITPIX| × GCOUNT × (PCOUNT + NAXIS1 × NAXIS2 × · · · × NAXISm),
+    /// Note that PCOUNT is also the total length in bytes of the supplemtntal data area (heap)
+    /// for binary tables with variable-length columns.
     pub fn data_len(&self) -> Result<u64> {
         // TODO: test
         let naxis_count = self.naxis()?;
