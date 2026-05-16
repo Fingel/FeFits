@@ -31,7 +31,7 @@ fn hdu_kind_from_extension_header(header: &Header) -> Result<HduKind> {
         XtensionType::Image => Ok(HduKind::Image),
         XtensionType::AsciiTable => Ok(HduKind::AsciiTable),
         XtensionType::BinaryTable => {
-            if header.get("ZCMPTYPE").is_some() && header.get("ZNAXIS").is_some() {
+            if header.get_value("ZIMAGE").and_then(|v| v.as_bool()) == Some(true) {
                 Ok(HduKind::CompressedImage)
             } else {
                 Ok(HduKind::BinaryTable)
@@ -369,6 +369,14 @@ mod tests {
         }
     }
 
+    fn bool_card(keyword: &str, value: bool) -> Card {
+        Card::Value {
+            keyword: keyword.to_string(),
+            value: CardValue::Logical(value),
+            comment: None,
+        }
+    }
+
     fn make_primary_header(bitpix: i64, axes: &[i64]) -> Header {
         let mut h = Header::new();
         h.append(Card::Value {
@@ -391,6 +399,7 @@ mod tests {
             x: XtensionType::BinaryTable,
             comment: None,
         });
+        h.append(bool_card("ZIMAGE", true));
         h.append(int_card("BITPIX", 8));
         h.append(int_card("NAXIS", 2));
         h.append(int_card("NAXIS1", 8)); // bytes per tile row in the table
