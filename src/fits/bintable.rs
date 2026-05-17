@@ -396,6 +396,38 @@ impl BinTableLayout {
             ))),
         }
     }
+
+    /// Read the raw bytes for one VLA cell from the heap. 7.3.5
+    ///
+    /// Seeks to `data_offset + self.heap_offset + descriptor.heap_offset()` and
+    /// reads `descriptor.count() x element_byte_size` bytes. The element size is
+    /// taken from `col.form`. Returns an error if `col` is not a VLA column.
+    pub fn read_heap_bytes<R: Read + Seek>(
+        &self,
+        reader: &mut R,
+        data_offset: u64,
+        descriptor: VlaDescriptor,
+        col: &ColumnDesc,
+    ) -> Result<Vec<u8>> {
+        let element_bytes = match &col.form {
+            TForm::VarArrayP { element_type, .. } | TForm::VarArrayQ { element_type, .. } => {
+                element_type.byte_size()
+            }
+            _ => {
+                return Err(Error::InvalidHDU(format!(
+                    "column '{}' is not a VLA column",
+                    col.name.as_deref().unwrap_or("<unnamed>")
+                )));
+            }
+        };
+        let byte_count = descriptor.count() * element_bytes;
+        // main data + start of heap + offset in heap
+        let pos = data_offset + self.heap_offset + descriptor.heap_offset();
+        reader.seek(SeekFrom::Start(pos))?;
+        let mut buf = vec![0u8; byte_count as usize];
+        reader.read_exact(&mut buf)?;
+        Ok(buf)
+    }
 }
 
 #[cfg(test)]
@@ -780,5 +812,60 @@ mod tests {
 
         let mut cursor = std::io::Cursor::new(vec![0u8; 4]);
         assert!(layout.read_vla_descriptor(&mut cursor, 0, 0, col).is_err());
+    }
+
+    #[test]
+    fn test_read_heap_bytes() {
+        // 1 PB column, 8 bytes/row (P descriptor), 1 row.
+        // heap_offset defaults to nrows x row_width = 8.
+        // Buffer: [8-byte descriptor | 5 heap bytes]
+        let mut h = make_bintable_header(1, 8, 1);
+        h.append(str_card("TTYPE1", "COMPRESSED_DATA"));
+        h.append(str_card("TFORM1", "PB(5)"));
+        h.set(int_card("PCOUNT", 5));
+        let layout = BinTableLayout::from_header(&h).unwrap();
+        let col = &layout.columns[0];
+
+        let expected_data: Vec<u8> = vec![10, 20, 30, 40, 50];
+        let mut data = p_descriptor_bytes(5, 0).to_vec();
+        data.extend_from_slice(&expected_data);
+        let mut cursor = std::io::Cursor::new(data);
+
+        let descriptor = layout.read_vla_descriptor(&mut cursor, 0, 0, col).unwrap();
+        let bytes = layout
+            .read_heap_bytes(&mut cursor, 0, descriptor, col)
+            .unwrap();
+        assert_eq!(bytes, expected_data);
+    }
+
+    #[test]
+    fn test_read_heap_bytes_nonzero_descriptor_offset() {
+        // Two rows: row 0 contributes 3 bytes at heap offset 0,
+        // row 1 contributes 4 bytes at heap offset 3.
+        // PCOUNT = 7 (3 + 4 bytes total in heap).
+        let mut h = make_bintable_header(1, 8, 2);
+        h.append(str_card("TTYPE1", "COMPRESSED_DATA"));
+        h.append(str_card("TFORM1", "PB(4)"));
+        h.set(int_card("PCOUNT", 7));
+        let layout = BinTableLayout::from_header(&h).unwrap();
+        let col = &layout.columns[0];
+
+        // heap_offset = 2 * 8 = 16
+        let mut data = Vec::new();
+        data.extend_from_slice(&p_descriptor_bytes(3, 0)); // row 0 descriptor
+        data.extend_from_slice(&p_descriptor_bytes(4, 3)); // row 1 descriptor
+        data.extend_from_slice(&[1, 2, 3]); // row 0 heap bytes
+        data.extend_from_slice(&[4, 5, 6, 7]); // row 1 heap bytes
+        let mut cursor = std::io::Cursor::new(data);
+
+        // first row
+        let d0 = layout.read_vla_descriptor(&mut cursor, 0, 0, col).unwrap();
+        let bytes = layout.read_heap_bytes(&mut cursor, 0, d0, col).unwrap();
+        assert_eq!(bytes, vec![1, 2, 3]);
+
+        // second row
+        let d1 = layout.read_vla_descriptor(&mut cursor, 0, 1, col).unwrap();
+        let bytes = layout.read_heap_bytes(&mut cursor, 0, d1, col).unwrap();
+        assert_eq!(bytes, vec![4, 5, 6, 7]);
     }
 }
