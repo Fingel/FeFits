@@ -1,3 +1,5 @@
+use std::io::{Read, Seek, SeekFrom};
+
 use crate::{
     card::CardValue,
     error::{Error, Result},
@@ -184,6 +186,35 @@ fn parse_emax(s: &str) -> u64 {
     }
 }
 
+/// A VLA cell descriptor read from the main data table. 7.3.5
+///
+/// Each cell of a P or Q type column stores a descriptor pair instead of inline data.
+/// The pair gives the actual element count for this row and the byte offset
+/// from the heap start to the first element of the array.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VlaDescriptor {
+    P { count: u32, offset: u32 },
+    Q { count: u64, offset: u64 },
+}
+
+impl VlaDescriptor {
+    /// Number of elements in this cell's variable-length array.
+    pub fn count(&self) -> u64 {
+        match self {
+            Self::P { count, .. } => *count as u64,
+            Self::Q { count, .. } => *count,
+        }
+    }
+
+    /// Byte offset from heap start to the first element. 7.3.5
+    pub fn heap_offset(&self) -> u64 {
+        match self {
+            Self::P { offset, .. } => *offset as u64,
+            Self::Q { offset, .. } => *offset,
+        }
+    }
+}
+
 /// Metadata for a single binary table column. 7.3.2
 ///
 /// Bundles the column header keywords (TTYPEn, TFORMn, TUNITn) with
@@ -311,6 +342,59 @@ impl BinTableLayout {
                 .as_deref()
                 .is_some_and(|n| n.eq_ignore_ascii_case(name))
         })
+    }
+
+    /// Read the VLA descriptor for the given row and column. 7.3.5
+    ///
+    /// Seeks to `data_offset + row x row_width + col.byte_offset` and reads
+    /// an 8-byte P descriptor or 16-byte Q descriptor (two big-endian signed
+    /// integers for count and heap offset). Returns an error if `col` is not
+    /// a VLA column.
+    pub fn read_vla_descriptor<R: Read + Seek>(
+        &self,
+        reader: &mut R,
+        data_offset: u64,
+        row: u64,
+        col: &ColumnDesc,
+    ) -> Result<VlaDescriptor> {
+        let pos = data_offset + row * self.row_width + col.byte_offset;
+        reader.seek(SeekFrom::Start(pos))?;
+        match &col.form {
+            TForm::VarArrayP { .. } => {
+                let mut buf = [0u8; 8];
+                reader.read_exact(&mut buf)?;
+                let count = i32::from_be_bytes(buf[0..4].try_into().unwrap());
+                let offset = i32::from_be_bytes(buf[4..8].try_into().unwrap());
+                if count < 0 || offset < 0 {
+                    return Err(Error::InvalidHDU(format!(
+                        "VLA P descriptor at row {row} has negative value: count={count}, offset={offset}"
+                    )));
+                }
+                Ok(VlaDescriptor::P {
+                    count: count as u32,
+                    offset: offset as u32,
+                })
+            }
+            TForm::VarArrayQ { .. } => {
+                let mut buf = [0u8; 16];
+                reader.read_exact(&mut buf)?;
+                let count = i64::from_be_bytes(buf[0..8].try_into().unwrap());
+                let offset = i64::from_be_bytes(buf[8..16].try_into().unwrap());
+                if count < 0 || offset < 0 {
+                    return Err(Error::InvalidHDU(format!(
+                        "VLA Q descriptor at row {row} has negative value: count={count}, offset={offset}"
+                    )));
+                }
+                Ok(VlaDescriptor::Q {
+                    count: count as u64,
+                    offset: offset as u64,
+                })
+            }
+            _ => Err(Error::InvalidHDU(format!(
+                "column '{}' is not a VLA column",
+                col.name.as_deref().unwrap_or("<unnamed>")
+            ))),
+        }
     }
 }
 
@@ -573,5 +657,128 @@ mod tests {
             .row_bytes(),
             16
         );
+    }
+
+    // Helpers for descriptor tests: encode a P or Q descriptor as raw bytes.
+    fn p_descriptor_bytes(count: u32, offset: u32) -> [u8; 8] {
+        let mut buf = [0u8; 8];
+        buf[0..4].copy_from_slice(&(count as i32).to_be_bytes());
+        buf[4..8].copy_from_slice(&(offset as i32).to_be_bytes());
+        buf
+    }
+
+    fn q_descriptor_bytes(count: u64, offset: u64) -> [u8; 16] {
+        let mut buf = [0u8; 16];
+        buf[0..8].copy_from_slice(&(count as i64).to_be_bytes());
+        buf[8..16].copy_from_slice(&(offset as i64).to_be_bytes());
+        buf
+    }
+
+    #[test]
+    fn test_read_vla_descriptor_p() {
+        // Two-row table with a single PB column (8 bytes per row).
+        // The only thing in this table is the two VLA descriptor pairs.
+        // Row 0: count=42, offset=0. Row 1: count=10, offset=42.
+        // So, row 0's array has 42 elements starting at heap byte 0,
+        // and row 1's array has 10 elements starting at heap byte 42.
+        let mut h = make_bintable_header(1, 8, 2); // 1 column, 8 bytes per row, 2 rows
+        h.append(str_card("TTYPE1", "COMPRESSED_DATA"));
+        h.append(str_card("TFORM1", "PB(1800)")); // P = 8 bytes in row, actual data in heap, 1800 is just a declared max
+        h.set(int_card("PCOUNT", 52)); // Size of the heap 42 + 10
+        let layout = BinTableLayout::from_header(&h).unwrap();
+        let col = &layout.columns[0];
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&p_descriptor_bytes(42, 0));
+        data.extend_from_slice(&p_descriptor_bytes(10, 42));
+        let mut cursor = std::io::Cursor::new(data);
+
+        let d0 = layout.read_vla_descriptor(&mut cursor, 0, 0, col).unwrap();
+        assert_eq!(
+            d0,
+            VlaDescriptor::P {
+                count: 42,
+                offset: 0
+            }
+        );
+        assert_eq!(d0.count(), 42);
+        assert_eq!(d0.heap_offset(), 0);
+
+        let d1 = layout.read_vla_descriptor(&mut cursor, 0, 1, col).unwrap();
+        assert_eq!(
+            d1,
+            VlaDescriptor::P {
+                count: 10,
+                offset: 42
+            }
+        );
+        assert_eq!(d1.count(), 10);
+        assert_eq!(d1.heap_offset(), 42);
+    }
+
+    #[test]
+    fn test_read_vla_descriptor_q() {
+        // See comments on test_read_vla_descriptor_p
+        let mut h = make_bintable_header(1, 16, 1); // 1 column, 16 bytes per row, 1 row
+        h.append(str_card("TTYPE1", "COMPRESSED_DATA"));
+        h.append(str_card("TFORM1", "QB(5)")); // Q = 16 bytes in row, actual data in heap, 5 is just a declared max
+        h.set(int_card("PCOUNT", 5));
+        let layout = BinTableLayout::from_header(&h).unwrap();
+        let col = &layout.columns[0];
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&q_descriptor_bytes(5, 0)); // 5 bytes, 0 offset - this is all the data
+        let mut cursor = std::io::Cursor::new(data);
+
+        let d = layout.read_vla_descriptor(&mut cursor, 0, 0, col).unwrap();
+        assert_eq!(
+            d,
+            VlaDescriptor::Q {
+                count: 5,
+                offset: 0
+            }
+        );
+    }
+
+    #[test]
+    fn test_read_vla_descriptor_with_data_offset() {
+        // data_offset nonzero. Construct a header block with a 2800 byte gap and
+        // test that we seek to the correct location (data_offset)
+        let mut h = make_bintable_header(1, 8, 1);
+        h.append(str_card("TTYPE1", "COMPRESSED_DATA"));
+        h.append(str_card("TFORM1", "PJ(7)"));
+        h.set(int_card("PCOUNT", 28)); // 7 elements x 4 bytes (J)
+        let layout = BinTableLayout::from_header(&h).unwrap();
+        let col = &layout.columns[0];
+
+        let data_offset: u64 = 2880;
+        let mut data = vec![0u8; data_offset as usize];
+        data.extend_from_slice(&p_descriptor_bytes(7, 0));
+        let mut cursor = std::io::Cursor::new(data);
+
+        let d = layout
+            .read_vla_descriptor(&mut cursor, data_offset, 0, col)
+            .unwrap();
+        assert_eq!(
+            d,
+            VlaDescriptor::P {
+                count: 7,
+                offset: 0
+            }
+        );
+    }
+
+    #[test]
+    fn test_read_vla_descriptor_non_vla_errors() {
+        // The column type is 1J which is Int32, not a VLA descriptor
+        // so reading a descriptor should error
+        let mut h = make_bintable_header(1, 4, 1);
+        h.append(str_card("TTYPE1", "FLUX"));
+        h.append(str_card("TFORM1", "1J"));
+        let layout = BinTableLayout::from_header(&h).unwrap();
+        let col = &layout.columns[0];
+
+        let mut cursor = std::io::Cursor::new(vec![0u8; 4]);
+        assert!(layout.read_vla_descriptor(&mut cursor, 0, 0, col).is_err());
     }
 }
