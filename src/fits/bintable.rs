@@ -1,4 +1,8 @@
-use crate::error::{Error, Result};
+use crate::{
+    card::CardValue,
+    error::{Error, Result},
+    header::Header,
+};
 
 /// The data type of elements stored in the heap for a Variable-Length Array column.
 /// Represents the `t` character in the TFORM `rPt(emax)` / `rQt(emax)` format.
@@ -197,9 +201,240 @@ pub struct ColumnDesc {
     pub byte_offset: u64,
 }
 
+/// Description of a FITS binary table. 7.3
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinTableLayout {
+    /// Number of rows (NAXIS2).
+    pub nrows: u64,
+    /// Bytes per row (NAXIS1).
+    pub row_width: u64,
+    /// Total heap size in bytes (PCOUNT). Zero for tables without VLA columns. 7.3.5
+    pub pcount: u64,
+    /// Byte offset from the start of the main data table to the heap (THEAP).
+    /// Defaults to `nrows x row_width` when THEAP is absent. 7.3.5
+    pub heap_offset: u64,
+    pub columns: Vec<ColumnDesc>,
+}
+
+impl BinTableLayout {
+    pub fn from_header(h: &Header) -> Result<Self> {
+        let nrows = h.naxisn(2)?;
+        let row_width = h.naxisn(1)?;
+
+        let pcount = match h.get_value("PCOUNT") {
+            Some(v) => v.as_integer().ok_or_else(|| Error::InvalidKeywordValue {
+                keyword: "PCOUNT",
+                value: format!("{v:?}"),
+                reason: "must be an integer",
+            })? as u64,
+            None => 0,
+        };
+
+        let tfields = match h.get_value("TFIELDS") {
+            // TODO: this pattern is getting annoying. Need to add h.get_value_as
+            // or get_value::<T>
+            Some(CardValue::Integer(i)) if *i >= 0 => *i as usize,
+            Some(v) => {
+                return Err(Error::InvalidKeywordValue {
+                    keyword: "TFIELDS",
+                    value: format!("{v:?}"),
+                    reason: "must be a non-negative integer",
+                });
+            }
+            None => return Err(Error::MissingKeyword("TFIELDS")),
+        };
+
+        let mut columns = Vec::with_capacity(tfields);
+        let mut computed_width = 0u64;
+
+        for n in 1..=tfields {
+            let form_str = match h.get_value(&format!("TFORM{n}")) {
+                Some(CardValue::String(s)) => s.clone(),
+                Some(v) => {
+                    return Err(Error::InvalidHeader(format!(
+                        "TFORM{n} must be a string, got {v:?}"
+                    )));
+                }
+                None => return Err(Error::InvalidHeader(format!("missing TFORM{n}"))),
+            };
+
+            let form = TForm::parse(&form_str)?;
+            let byte_offset = computed_width;
+            computed_width += form.row_bytes();
+
+            let name = h
+                .get_value(&format!("TTYPE{n}"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_owned());
+
+            let unit = h
+                .get_value(&format!("TUNIT{n}"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_owned());
+
+            columns.push(ColumnDesc {
+                name,
+                unit,
+                form,
+                byte_offset,
+            });
+        }
+
+        if computed_width != row_width {
+            return Err(Error::InvalidHeader(format!(
+                "computed row width {computed_width} does not match NAXIS1 {row_width}"
+            )));
+        }
+
+        let heap_offset = match h.get_value("THEAP") {
+            Some(v) => v.as_integer().ok_or_else(|| Error::InvalidKeywordValue {
+                keyword: "THEAP",
+                value: format!("{v:?}"),
+                reason: "must be an integer",
+            })? as u64,
+            None => row_width * nrows,
+        };
+
+        Ok(BinTableLayout {
+            nrows,
+            row_width,
+            pcount,
+            heap_offset,
+            columns,
+        })
+    }
+
+    /// Find the first column whose name matches (case-insensitive). 7.3.2
+    pub fn column_by_name(&self, name: &str) -> Option<&ColumnDesc> {
+        self.columns.iter().find(|c| {
+            c.name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(name))
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{card::Card, extension::XtensionType, header::Header, testutil::*};
+
+    fn make_bintable_header(tfields: i64, naxis1: i64, naxis2: i64) -> Header {
+        let mut h = Header::new();
+        h.append(Card::Xtension {
+            x: XtensionType::BinaryTable,
+            comment: None,
+        });
+        h.append(int_card("BITPIX", 8));
+        h.append(int_card("NAXIS", 2));
+        h.append(int_card("NAXIS1", naxis1));
+        h.append(int_card("NAXIS2", naxis2));
+        h.append(int_card("PCOUNT", 0));
+        h.append(int_card("GCOUNT", 1));
+        h.append(int_card("TFIELDS", tfields));
+        h
+    }
+
+    #[test]
+    fn test_layout_single_column() {
+        let mut h = make_bintable_header(1, 4, 10);
+        h.append(str_card("TTYPE1", "TIME"));
+        h.append(str_card("TFORM1", "1J"));
+        h.append(str_card("TUNIT1", "s"));
+
+        let layout = BinTableLayout::from_header(&h).unwrap();
+        assert_eq!(layout.nrows, 10);
+        assert_eq!(layout.row_width, 4);
+        assert_eq!(layout.pcount, 0);
+        assert_eq!(layout.heap_offset, 40); // default: row_width x nrows
+        assert_eq!(layout.columns.len(), 1);
+        let col = &layout.columns[0];
+        assert_eq!(col.name.as_deref(), Some("TIME"));
+        assert_eq!(col.form, TForm::Int32(1));
+        assert_eq!(col.unit.as_deref(), Some("s"));
+        assert_eq!(col.byte_offset, 0);
+    }
+
+    #[test]
+    fn test_layout_column_offsets() {
+        // I(2 bytes) + J(4 bytes) + D(8 bytes) = 14 bytes per row
+        let mut h = make_bintable_header(3, 14, 5);
+        h.append(str_card("TFORM1", "1I"));
+        h.append(str_card("TFORM2", "1J"));
+        h.append(str_card("TFORM3", "1D"));
+
+        let layout = BinTableLayout::from_header(&h).unwrap();
+        assert_eq!(layout.columns[0].byte_offset, 0);
+        assert_eq!(layout.columns[1].byte_offset, 2);
+        assert_eq!(layout.columns[2].byte_offset, 6);
+    }
+
+    #[test]
+    fn test_layout_vla_column() {
+        // PB(1800) = 8 bytes in row heap has the actual compressed data
+        let mut h = make_bintable_header(1, 8, 3);
+        h.append(str_card("TTYPE1", "COMPRESSED_DATA"));
+        h.append(str_card("TFORM1", "PB(1800)"));
+        h.set(int_card("PCOUNT", 5400));
+
+        let layout = BinTableLayout::from_header(&h).unwrap();
+        assert_eq!(layout.pcount, 5400);
+        assert!(layout.columns[0].form.is_vla());
+        assert_eq!(layout.columns[0].form.row_bytes(), 8);
+    }
+
+    #[test]
+    fn test_layout_explicit_theap() {
+        let mut h = make_bintable_header(1, 8, 3);
+        h.append(str_card("TFORM1", "PB(100)"));
+        h.append(int_card("PCOUNT", 300));
+        h.append(int_card("THEAP", 2880)); // gap aligns heap to block boundary
+
+        let layout = BinTableLayout::from_header(&h).unwrap();
+        assert_eq!(layout.heap_offset, 2880);
+    }
+
+    #[test]
+    fn test_layout_column_by_name() {
+        let mut h = make_bintable_header(2, 16, 1);
+        h.append(str_card("TTYPE1", "RA"));
+        h.append(str_card("TFORM1", "1D"));
+        h.append(str_card("TTYPE2", "DEC"));
+        h.append(str_card("TFORM2", "1D"));
+
+        let layout = BinTableLayout::from_header(&h).unwrap();
+        assert_eq!(layout.column_by_name("DEC").unwrap().byte_offset, 8);
+        assert_eq!(layout.column_by_name("dec").unwrap().byte_offset, 8);
+        assert!(layout.column_by_name("FLUX").is_none());
+    }
+
+    #[test]
+    fn test_layout_row_width_mismatch_errors() {
+        let mut h = make_bintable_header(1, 10, 5); // sets naxis1 to 10
+        h.append(str_card("TFORM1", "1J")); // 4 bytes
+
+        assert!(BinTableLayout::from_header(&h).is_err());
+    }
+
+    #[test]
+    fn test_layout_missing_tfields_errors() {
+        let mut h = Header::new();
+        h.append(int_card("NAXIS", 2));
+        h.append(int_card("NAXIS1", 4));
+        h.append(int_card("NAXIS2", 1));
+
+        assert!(matches!(
+            BinTableLayout::from_header(&h).unwrap_err(),
+            Error::MissingKeyword("TFIELDS")
+        ));
+    }
+
+    #[test]
+    fn test_layout_missing_tform_errors() {
+        let h = make_bintable_header(1, 4, 1);
+        // TFIELDS=1 but no TFORM1
+        assert!(BinTableLayout::from_header(&h).is_err());
+    }
 
     #[test]
     fn test_vla_element_type_from_char() {
