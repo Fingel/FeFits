@@ -172,6 +172,90 @@ impl TileGeometry {
     pub fn total_tiles(&self) -> u64 {
         (1..=self.naxis()).map(|n| self.ntiles_along(n)).product()
     }
+
+    /// Number of pixels in tile `tile_index`, accounting for partial edge tiles.
+    ///
+    /// `tile_index` is the flat tile index (0..`total_tiles()`), matching the
+    /// binary table row number.
+    pub fn tile_n_pixels(&self, tile_index: u64) -> usize {
+        let mut n = 1usize;
+        let mut remaining = tile_index;
+        // for dim in image_shape...
+        for d in 0..self.image_shape.len() {
+            let ntiles_d = self.image_shape[d].div_ceil(self.tile_shape[d]); // num. tiles in this axis
+            let td = remaining % ntiles_d;
+            remaining /= ntiles_d;
+            n *= self.tile_shape[d].min(self.image_shape[d] - td * self.tile_shape[d]) as usize;
+        }
+        n
+    }
+
+    /// Copy `pixels` from tile `tile_index` into the correct positions of `output`.
+    ///
+    /// `tile_index` is the flat tile index (0..`total_tiles()`), matching the
+    /// binary table row number. Tiles are ordered row-major (axis 0 fastest).
+    /// Individual pixels are also row-major. Edge tiles may be smaller than
+    /// the `tile_shape` but still occupy the same slot.
+    pub fn place_tile(&self, pixels: &[i32], tile_index: u64, output: &mut [i32]) {
+        let ndim = self.image_shape.len();
+
+        // Step 1: convert tile_index into x, y tile coordinates.
+        // Same as numpy's unravel_index(tile_index, ntiles_per_axis, order='F').
+        let mut tile_coords = vec![0u64; ndim];
+        let mut remaining = tile_index;
+        for (d, tile_coord) in tile_coords.iter_mut().enumerate() {
+            let ntiles_d = self.image_shape[d].div_ceil(self.tile_shape[d]);
+            *tile_coord = remaining % ntiles_d;
+            remaining /= ntiles_d;
+        }
+
+        // Step 2: actual pixel dimensions of this tile, clamped at image edges.
+        let actual_dims: Vec<usize> = (0..ndim)
+            .map(|d| {
+                self.tile_shape[d].min(self.image_shape[d] - tile_coords[d] * self.tile_shape[d])
+                    as usize
+            })
+            .collect();
+
+        // Step 3: pixel coordinates of the tile's top-left corner in the output.
+        let tile_start: Vec<usize> = (0..ndim)
+            .map(|d| (tile_coords[d] * self.tile_shape[d]) as usize)
+            .collect();
+
+        // Step 4: copy rows. Axis 0 is contiguous in both tile and output (FITS order),
+        // so we iterate over every combination of higher-axis coordinates and copy one
+        // axis-0 slice at a time.
+        //
+        // strides[d] = number of output elements to advance when coord[d] increases by 1.
+        let mut strides = vec![1usize; ndim];
+        for d in 1..ndim {
+            strides[d] = strides[d - 1] * self.image_shape[d - 1] as usize;
+        }
+        // Flat index of the tile's first pixel in output.
+        let base: usize = (0..ndim).map(|d| tile_start[d] * strides[d]).sum();
+        let row_width = actual_dims[0];
+        // Total number of axis-0 rows across all higher dimensions.
+        let n_rows: usize = if ndim > 1 {
+            actual_dims[1..].iter().product()
+        } else {
+            1
+        };
+
+        for row in 0..n_rows {
+            // Unravel `row` into higher-axis coords and compute the output offset.
+            let mut rem = row;
+            let mut row_offset = 0usize;
+            for d in 1..ndim {
+                let coord = rem % actual_dims[d];
+                rem /= actual_dims[d];
+                row_offset += coord * strides[d];
+            }
+            let out_start = base + row_offset;
+            let pix_start = row * row_width;
+            output[out_start..out_start + row_width]
+                .copy_from_slice(&pixels[pix_start..pix_start + row_width]);
+        }
+    }
 }
 
 /// All compression metadata needed to decompress a tile-compressed image. 10.1
@@ -493,5 +577,104 @@ mod tests {
         assert_eq!(header.znaxis().unwrap(), 2);
         assert_eq!(header.znaxisn(1).unwrap(), 100);
         assert_eq!(header.znaxisn(2).unwrap(), 50);
+    }
+
+    // --- tile_n_pixels ---
+
+    fn geom(image: &[u64], tile: &[u64]) -> TileGeometry {
+        TileGeometry {
+            image_shape: image.to_vec(),
+            tile_shape: tile.to_vec(),
+        }
+    }
+
+    #[test]
+    fn test_tile_n_pixels_full_tiles() {
+        // 8x6 image with 4x3 tiles: no edge tiles, every tile is 4x3=12 pixels.
+        let g = geom(&[8, 6], &[4, 3]);
+        for t in 0..g.total_tiles() {
+            assert_eq!(g.tile_n_pixels(t), 12, "tile {t}");
+        }
+    }
+
+    #[test]
+    fn test_tile_n_pixels_edge_tiles() {
+        // 10x7 image with 4x3 tiles (3 wide × 3 tall = 9 tiles):
+        //
+        //      0    4    8 10
+        //      |    |    | |
+        //   0  [t0  |t1  |t2]   <- full rows (3 tall), right edge 2 wide
+        //   3  [t3  |t4  |t5]
+        //   6  [t6  |t7  |t8]   <- bottom edge (1 tall), corner t8 is 2x1
+        //   7
+        //
+        // Tile indices increase along axis 0 (x) first (FITS/Fortran order): t0=(0,0), t1=(1,0), t2=(2,0), ...
+        let g = geom(&[10, 7], &[4, 3]);
+        assert_eq!(g.tile_n_pixels(0), 12); // t0 (tx=0,ty=0): full 4×3
+        assert_eq!(g.tile_n_pixels(2), 6); // t2 (tx=2,ty=0): right edge, 2×3
+        assert_eq!(g.tile_n_pixels(6), 4); // t6 (tx=0,ty=2): bottom edge, 4×1
+        assert_eq!(g.tile_n_pixels(8), 2); // t8 (tx=2,ty=2): corner, 2×1
+    }
+
+    #[test]
+    fn test_tile_n_pixels_row_by_row() {
+        // Default tiling: each tile is exactly one full row.
+        let g = geom(&[100, 50], &[100, 1]);
+        for t in 0..50 {
+            assert_eq!(g.tile_n_pixels(t), 100);
+        }
+    }
+
+    // --- place_tile ---
+
+    #[test]
+    fn test_place_tile_row_by_row() {
+        // 4x3 image, row-by-row tiling: tile t fills row t.
+        let g = geom(&[4, 3], &[4, 1]);
+        let mut out = vec![0i32; 12];
+        g.place_tile(&[1, 2, 3, 4], 0, &mut out);
+        g.place_tile(&[5, 6, 7, 8], 1, &mut out);
+        g.place_tile(&[9, 10, 11, 12], 2, &mut out);
+        assert_eq!(out, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    }
+
+    #[test]
+    fn test_place_tile_square() {
+        // 4x4 image, 2x2 tiles. Four tiles assemble into the correct 2D layout.
+        // Image (row-major, width=4):
+        //   row 0: [t0p0, t0p1, t1p0, t1p1]
+        //   row 1: [t0p2, t0p3, t1p2, t1p3]
+        //   row 2: [t2p0, t2p1, t3p0, t3p1]
+        //   row 3: [t2p2, t2p3, t3p2, t3p3]
+        let g = geom(&[4, 4], &[2, 2]);
+        let mut out = vec![0i32; 16];
+        g.place_tile(&[1, 2, 3, 4], 0, &mut out);
+        g.place_tile(&[5, 6, 7, 8], 1, &mut out);
+        g.place_tile(&[9, 10, 11, 12], 2, &mut out);
+        g.place_tile(&[13, 14, 15, 16], 3, &mut out);
+        assert_eq!(
+            out,
+            vec![
+                1, 2, 5, 6, // row 0
+                3, 4, 7, 8, // row 1
+                9, 10, 13, 14, // row 2
+                11, 12, 15, 16 // row 3
+            ]
+        );
+    }
+
+    #[test]
+    fn test_place_tile_edge() {
+        // 6x4 image, 4x3 tiles: right and bottom edge tiles are partial.
+        // Tile 3 is the corner (tx=1,ty=1): 2 wide x 1 tall, goes to (x=4..6, y=3).
+        let g = geom(&[6, 4], &[4, 3]);
+        let mut out = vec![0i32; 24];
+        g.place_tile(&[100, 200], 3, &mut out);
+        // (x=4, y=3) -> index 3*6+4=22; (x=5, y=3) -> index 23
+        assert_eq!(out[22], 100);
+        assert_eq!(out[23], 200);
+        // All other pixels untouched
+        assert!(out[..22].iter().all(|&v| v == 0));
+        assert!(out[24..].iter().all(|&v| v == 0));
     }
 }

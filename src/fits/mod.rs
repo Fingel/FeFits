@@ -13,6 +13,8 @@ use crate::{
     io::BlockReader,
     pixel::Pixel,
 };
+use bintable::BinTableLayout;
+use compression::{AlgoParams, CmpType, CompressionHeader};
 
 pub mod bintable;
 pub mod compression;
@@ -72,6 +74,56 @@ impl Fits<File> {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Fits::from_reader(File::open(path)?)
     }
+}
+
+fn convert_compressed_pixels(
+    pixels: Vec<i32>,
+    bitpix: Bitpix,
+    bscale: f64,
+    bzero: f64,
+) -> ImageData {
+    if bscale == 1.0 && bzero == 0.0 {
+        return match bitpix {
+            Bitpix::UnsignedByte => ImageData::U8(pixels.into_iter().map(|v| v as u8).collect()),
+            Bitpix::SignedShort => ImageData::I16(pixels.into_iter().map(|v| v as i16).collect()),
+            Bitpix::SignedInt => ImageData::I32(pixels),
+            _ => ImageData::I32(pixels),
+        };
+    }
+
+    if bscale == 1.0 {
+        if bitpix == Bitpix::UnsignedByte && bzero == -128.0 {
+            return ImageData::I8(
+                pixels
+                    .into_iter()
+                    .map(|v| (v as u8 ^ (1u8 << 7)) as i8)
+                    .collect(),
+            );
+        }
+        if bitpix == Bitpix::SignedShort && bzero == 32768.0 {
+            return ImageData::U16(
+                pixels
+                    .into_iter()
+                    .map(|v| (v as u16) ^ (1u16 << 15))
+                    .collect(),
+            );
+        }
+        if bitpix == Bitpix::SignedInt && bzero == 2147483648.0 {
+            return ImageData::U32(
+                pixels
+                    .into_iter()
+                    .map(|v| (v as u32) ^ (1u32 << 31))
+                    .collect(),
+            );
+        }
+    }
+
+    ImageData::F64(
+        pixels
+            .into_iter()
+            .map(|v| bzero + bscale * v as f64)
+            .collect(),
+    )
 }
 
 impl<R: Read + Seek> Fits<R> {
@@ -218,6 +270,10 @@ impl<R: Read + Seek> Fits<R> {
     }
 
     pub fn read_image(&mut self, n: usize) -> Result<ImageData> {
+        if self.index.get(n).ok_or(Error::HduNotFound(n))?.kind == HduKind::CompressedImage {
+            return self.read_compressed_image(n);
+        }
+
         let header = self.read_header(n)?;
         let bitpix = header.bitpix()?;
         let bscale = header.bscale()?;
@@ -291,6 +347,63 @@ impl<R: Read + Seek> Fits<R> {
                 .collect(),
         };
         Ok(ImageData::F64(pixels))
+    }
+
+    fn read_compressed_image(&mut self, n: usize) -> Result<ImageData> {
+        let data_offset = self.index[n].data_offset;
+
+        let header = self.read_header(n)?;
+        let layout = BinTableLayout::from_header(&header)?;
+        let comp = CompressionHeader::from_header(&header)?;
+
+        if comp.cmp_type != CmpType::Rice {
+            return Err(Error::UnsupportedFeature(format!(
+                "tile compression type {:?} is not supported; only Rice is supported",
+                comp.cmp_type
+            )));
+        }
+
+        if comp.quantize.is_some() {
+            return Err(Error::UnsupportedFeature(
+                "quantized float tile compression (ZQUANTIZ) is not yet supported".into(),
+            ));
+        }
+
+        let (block_size, byte_pix) = match comp.algo_params {
+            AlgoParams::Rice {
+                block_size,
+                byte_pix,
+            } => (block_size, byte_pix),
+            _ => unreachable!(),
+        };
+
+        let col = layout
+            .column_by_name("COMPRESSED_DATA")
+            .ok_or_else(|| {
+                Error::InvalidHDU("no COMPRESSED_DATA column in tile-compressed image".into())
+            })?
+            .clone();
+
+        let total_pixels: usize = comp.tiles.image_shape.iter().map(|&d| d as usize).product();
+        let mut output = vec![0i32; total_pixels];
+
+        for tile_index in 0..comp.tiles.total_tiles() {
+            let n_pixels = comp.tiles.tile_n_pixels(tile_index);
+            let descriptor =
+                layout.read_vla_descriptor(&mut self.reader, data_offset, tile_index, &col)?;
+            let bytes = layout.read_heap_bytes(&mut self.reader, data_offset, descriptor, &col)?;
+            let pixels = rice::rice_decompress(&bytes, n_pixels, block_size, byte_pix)?;
+            comp.tiles.place_tile(&pixels, tile_index, &mut output);
+        }
+
+        let bscale = header.bscale()?;
+        let bzero = header.bzero()?;
+        Ok(convert_compressed_pixels(
+            output,
+            comp.bitpix,
+            bscale,
+            bzero,
+        ))
     }
 
     fn scan_one(&mut self, offset: u64) -> Result<Option<u64>> {
@@ -727,14 +840,12 @@ mod tests {
     }
 
     #[test]
-    fn test_read_image_compressed_unsupported() {
+    fn test_read_image_compressed_invalid_layout_errors() {
+        // The mock header has no TFIELDS, so BinTableLayout::from_header fails.
         let mut buf = write_hdu(&make_primary_header(8, &[]), &[]);
         buf.extend(write_hdu(&make_compressed_image_extension(100, 50), &[]));
         let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
-        assert!(matches!(
-            fits.read_image(1).unwrap_err(),
-            crate::error::Error::UnsupportedFeature(_)
-        ));
+        assert!(fits.read_image(1).is_err());
     }
 
     #[test]
@@ -782,5 +893,139 @@ mod tests {
         let buf = write_hdu(&make_primary_header(16, &[0, 50]), &[]);
         let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
         assert_eq!(fits.find_image().unwrap(), None);
+    }
+
+    // --- convert_compressed_pixels ---
+
+    #[test]
+    fn test_convert_no_scaling() {
+        assert!(matches!(
+            convert_compressed_pixels(vec![1, 2], Bitpix::UnsignedByte, 1.0, 0.0),
+            ImageData::U8(v) if v == vec![1u8, 2]
+        ));
+        assert!(matches!(
+            convert_compressed_pixels(vec![-1, 32767], Bitpix::SignedShort, 1.0, 0.0),
+            ImageData::I16(v) if v == vec![-1i16, 32767]
+        ));
+        assert!(matches!(
+            convert_compressed_pixels(vec![i32::MIN, i32::MAX], Bitpix::SignedInt, 1.0, 0.0),
+            ImageData::I32(v) if v == vec![i32::MIN, i32::MAX]
+        ));
+    }
+
+    #[test]
+    fn test_convert_unsigned_conventions() {
+        // BZERO=-128: u8 stored as signed → flip MSB to get i8
+        // Stored 0→physical -128, stored 128→physical 0, stored 255→physical 127
+        assert!(matches!(
+            convert_compressed_pixels(vec![0, 128, 255], Bitpix::UnsignedByte, 1.0, -128.0),
+            ImageData::I8(v) if v == vec![-128i8, 0, 127]
+        ));
+        // BZERO=32768: i16 stored → flip MSB to get u16
+        // Stored -32768→physical 0, stored 0→physical 32768, stored 32767→physical 65535
+        assert!(matches!(
+            convert_compressed_pixels(vec![-32768, 0, 32767], Bitpix::SignedShort, 1.0, 32768.0),
+            ImageData::U16(v) if v == vec![0u16, 32768, 65535]
+        ));
+        // BZERO=2147483648: i32 stored → flip MSB to get u32
+        assert!(matches!(
+            convert_compressed_pixels(vec![i32::MIN, 0, i32::MAX], Bitpix::SignedInt, 1.0, 2147483648.0),
+            ImageData::U32(v) if v == vec![0u32, 2147483648, u32::MAX]
+        ));
+    }
+
+    #[test]
+    fn test_convert_arbitrary_scaling() {
+        // bscale=2.0, bzero=10.0: physical = 10 + 2*stored
+        match convert_compressed_pixels(vec![5, 0, -3], Bitpix::SignedInt, 2.0, 10.0) {
+            ImageData::F64(v) => assert_eq!(v, vec![20.0, 10.0, 4.0]),
+            other => panic!("expected F64, got {other:?}"),
+        }
+    }
+
+    // --- read_compressed_image ---
+
+    fn make_rice_bintable_header(
+        znaxis1: i64,
+        znaxis2: i64,
+        zbitpix: i64,
+        byte_pix: i64,
+        heap_bytes: i64,
+        extra: impl FnOnce(&mut Header),
+    ) -> Header {
+        let mut h = Header::new();
+        h.append(Card::Xtension {
+            x: XtensionType::BinaryTable,
+            comment: None,
+        });
+        h.append(int_card("BITPIX", 8));
+        h.append(int_card("NAXIS", 2));
+        h.append(int_card("NAXIS1", 8)); // P descriptor = 8 bytes/row
+        h.append(int_card("NAXIS2", znaxis1 * znaxis2 / znaxis1)); // one tile per row
+        h.append(int_card("PCOUNT", heap_bytes));
+        h.append(int_card("GCOUNT", 1));
+        h.append(int_card("TFIELDS", 1));
+        h.append(str_card("TTYPE1", "COMPRESSED_DATA"));
+        h.append(str_card("TFORM1", &format!("1PB({heap_bytes})")));
+        h.append(bool_card("ZIMAGE", true));
+        h.append(str_card("ZCMPTYPE", "RICE_1"));
+        h.append(int_card("ZNAXIS", 2));
+        h.append(int_card("ZNAXIS1", znaxis1));
+        h.append(int_card("ZNAXIS2", znaxis2));
+        h.append(int_card("ZBITPIX", zbitpix));
+        h.append(int_card("ZVAL1", 4)); // block_size=4
+        h.append(int_card("ZVAL2", byte_pix));
+        extra(&mut h);
+        h.append(Card::End);
+        h
+    }
+
+    fn p_descriptor(count: i32, offset: i32) -> [u8; 8] {
+        let mut buf = [0u8; 8];
+        buf[0..4].copy_from_slice(&count.to_be_bytes());
+        buf[4..8].copy_from_slice(&offset.to_be_bytes());
+        buf
+    }
+
+    #[test]
+    fn test_read_compressed_image_i32() {
+        // 4x1 Rice-compressed image, pixels [100, 101, 102, 103].
+        // Compressed bytes from test_rice_sequential_increasing.
+        let compressed = [0x00u8, 0x00, 0x00, 0x64, 0x0C, 0x92];
+        let h = make_rice_bintable_header(4, 1, 32, 4, 6, |_| {});
+        let mut data = p_descriptor(6, 0).to_vec();
+        data.extend_from_slice(&compressed);
+
+        let mut buf = write_hdu(&make_primary_header(8, &[]), &[]);
+        buf.extend(write_hdu(&h, &data));
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+
+        match fits.read_image(1).unwrap() {
+            ImageData::I32(pixels) => assert_eq!(pixels, vec![100, 101, 102, 103]),
+            other => panic!("expected I32, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_read_compressed_image_u16_bzero() {
+        // 2x1 Rice-compressed image, original pixels [42, 42] stored as i16.
+        // With BZERO=32768 the physical type is u16.
+        // Low-entropy Rice: first pixel [0x00, 0x2A] + FS byte 0x00.
+        let compressed = [0x00u8, 0x2A, 0x00];
+        let h = make_rice_bintable_header(2, 1, 16, 2, 3, |h| {
+            h.append(float_card("BZERO", 32768.0));
+        });
+        let mut data = p_descriptor(3, 0).to_vec();
+        data.extend_from_slice(&compressed);
+
+        let mut buf = write_hdu(&make_primary_header(8, &[]), &[]);
+        buf.extend(write_hdu(&h, &data));
+        let mut fits = Fits::from_reader(Cursor::new(buf)).unwrap();
+
+        // 42 stored as i16 + BZERO=32768: physical = (42u16) ^ 0x8000 = 32810
+        match fits.read_image(1).unwrap() {
+            ImageData::U16(pixels) => assert_eq!(pixels, vec![32810u16, 32810]),
+            other => panic!("expected U16, got {other:?}"),
+        }
     }
 }
