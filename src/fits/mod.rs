@@ -17,6 +17,7 @@ use crate::{
 pub mod bintable;
 pub mod compression;
 mod image;
+pub mod rice;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum HduKind {
