@@ -37,8 +37,8 @@ fn percentile_scale(pixels: &[f64]) -> Vec<u8> {
 }
 
 #[rstest]
-fn test_image_output(#[files("tests/fixtures/*.fits")] path: PathBuf) {
-    let filename = path.file_stem().unwrap().to_string_lossy();
+fn test_image_output(#[files("tests/fixtures/*")] path: PathBuf) {
+    let filename = path.file_name().unwrap().to_string_lossy();
     let mut fits = Fits::open(&path).expect("failed to open file");
 
     let Some(hdu_idx) = fits.find_image().expect("error scanning HDUs") else {
@@ -47,8 +47,8 @@ fn test_image_output(#[files("tests/fixtures/*.fits")] path: PathBuf) {
     };
 
     let header = fits.read_header(hdu_idx).expect("failed to read header");
-    let width = header.naxisn(1).expect("NAXIS1 missing") as u32;
-    let height = header.naxisn(2).expect("NAXIS2 missing") as u32;
+    let width = header.image_naxisn(1).expect("NAXIS1 missing") as u32;
+    let height = header.image_naxisn(2).expect("NAXIS2 missing") as u32;
 
     let pixels = percentile_scale(
         &fits

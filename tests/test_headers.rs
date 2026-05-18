@@ -7,7 +7,7 @@ use fefits::fits::Fits;
 use rstest::rstest;
 
 #[rstest]
-fn test_mandatory_headers(#[files("tests/fixtures/*.fits")] path: PathBuf) {
+fn test_mandatory_headers(#[files("tests/fixtures/*")] path: PathBuf) {
     let mut fits = Fits::open(&path).expect("failed to open file");
     let filename = path.file_name().unwrap().to_string_lossy();
     let header = fits

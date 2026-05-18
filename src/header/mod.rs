@@ -151,6 +151,15 @@ impl Header {
         }
     }
 
+    /// Image dimension along axis `n`, regardless of whether the HDU is tile-compressed.
+    pub fn image_naxisn(&self, n: usize) -> Result<u64> {
+        if self.get_value("ZIMAGE").and_then(|v| v.as_bool()) == Some(true) {
+            self.znaxisn(n)
+        } else {
+            self.naxisn(n)
+        }
+    }
+
     pub fn naxisn(&self, n: usize) -> Result<u64> {
         let naxis = format!("NAXIS{n}");
         match self.get_value(&naxis) {
